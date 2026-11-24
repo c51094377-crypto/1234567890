@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Three.js GLB Viewer</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #18181b;
+      color: #f4f4f5;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+    }
+    #canvas-container {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+    /* コントロールパネル */
+    #ui-panel {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      width: 280px;
+      background: rgba(24, 24, 27, 0.85);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      z-index: 10;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    }
+    h1 {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .file-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      padding: 10px 14px;
+      background: #3b82f6;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.2s;
+      text-align: center;
+    }
+    .file-btn:hover { background: #2563eb; }
+    #file-input { display: none; }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      padding-top: 12px;
+      font-size: 13px;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    button.secondary {
+      background: rgba(255, 255, 255, 0.1);
+      color: #f4f4f5;
+      border: none;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button.secondary:hover { background: rgba(255, 255, 255, 0.2); }
+    select, input[type="range"] {
+      background: #27272a;
+      color: #f4f4f5;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 6px;
+      padding: 4px 6px;
+      font-size: 12px;
+    }
+    input[type="range"] { width: 120px; padding: 0; }
+    input[type="checkbox"] { accent-color: #3b82f6; cursor: pointer; }
+
+    #file-name {
+      font-size: 12px;
+      color: #a1a1aa;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ドラッグ＆ドロップオーバーレイ */
+    #drop-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(59, 130, 246, 0.2);
+      border: 3px dashed #3b82f6;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      font-weight: 600;
+      z-index: 20;
+      pointer-events: none;
+    }
+    #drop-overlay.active { display: flex; }
+
+    /* 初期案内 */
+    #empty-hint {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      color: #71717a;
+      pointer-events: none;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+  </style>
+
+  <!-- Three.js Import Map -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="canvas-container"></div>
+
+  <div id="empty-hint">
+    左上のボタンからファイルを選択するか、<br>
+    ここに .glb / .gltf ファイルをドロップしてください
+  </div>
+
+  <div id="drop-overlay">GLB / glTF ファイルをドロップして読み込み</div>
+
+  <div id="ui-panel">
+    <h1>GLB 3D Viewer</h1>
+    <label class="file-btn" for="file-input">GLBファイルを選択</label>
+    <input type="file" id="file-input" accept=".glb,.gltf" />
+    <div id="file-name">未選択</div>
+
+    <div class="control-group">
+      <div class="row">
+        <span>ワイヤーフレーム</span>
+        <input type="checkbox" id="wireframe-toggle" />
+      </div>
+      <div class="row">
+        <span>自動回転</span>
+        <input type="checkbox" id="autorotate-toggle" />
+      </div>
+      <div class="row">
+        <span>グリッド表示</span>
+        <input type="checkbox" id="grid-toggle" checked />
+      </div>
+      <div class="row">
+        <span>照明の明るさ</span>
+        <input type="range" id="light-slider" min="0.2" max="4" step="0.1" value="1.5" />
+      </div>
+      <div class="row">
+        <span>背景色</span>
+        <select id="bg-select">
+          <option value="#18181b">ダーク</option>
+          <option value="#3f3f46">グレー</option>
+          <option value="#e4e4e7">ライト</option>
+          <option value="#ffffff">ホワイト</option>
+        </select>
+      </div>
+      <div class="row">
+        <span>カメラ</span>
+        <button class="secondary" id="reset-camera-btn">視点リセット</button>
+      </div>
+    </div>
+
+    <div class="control-group" id="anim-group" style="display: none;">
+      <div class="row">
+        <span>アニメーション</span>
+        <button class="secondary" id="anim-play-btn">一時停止</button>
+      </div>
+      <select id="anim-select"></select>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+    // 基本セットアップ
+    const container = document.getElementById('canvas-container');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color('#18181b');
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 1000);
+    camera.position.set(2, 2, 4);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    container.appendChild(renderer.domElement);
+
+    // 環境光（PBRマテリアルが綺麗に映るように設定）
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+    dirLight.position.set(5, 10, 7);
+    scene.add(dirLight);
+
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+    scene.add(hemiLight);
+
+    // グリッド
+    const gridHelper = new THREE.GridHelper(10, 20, 0x52525b, 0x27272a);
+    scene.add(gridHelper);
+
+    // カメラ操作
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    // GLTF / Draco ローダー
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/draco/');
+    const loader = new GLTFLoader();
+    loader.setDRACOLoader(dracoLoader);
+
+    // 状態管理
+    let currentModel = null;
+    let mixer = null;
+    let animations = [];
+    let activeAction = null;
+    let isPlaying = true;
+    let defaultCameraPos = new THREE.Vector3(2, 2, 4);
+    let defaultTarget = new THREE.Vector3(0, 0, 0);
+    const clock = new THREE.Clock();
+
+    // モデルの解放処理
+    function clearCurrentModel() {
+      if (!currentModel) return;
+      scene.remove(currentModel);
+      currentModel.traverse((child) => {
+        if (child.isMesh) {
+          child.geometry.dispose();
+          if (Array.isArray(child.material)) {
+            child.material.forEach((m) => m.dispose());
+          } else if (child.material) {
+            child.material.dispose();
+          }
+        }
+      });
+      currentModel = null;
+      mixer = null;
+      animations = [];
+      activeAction = null;
+      document.getElementById('anim-group').style.display = 'none';
+    }
+
+    // モデルのセンタリングとカメラ自動調整
+    function fitModelToView(model) {
+      const box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+
+      // 底面をY=0、XZを原点へ配置
+      model.position.x += (model.position.x - center.x);
+      model.position.y += (model.position.y - box.min.y);
+      model.position.z += (model.position.z - center.z);
+
+      const newBox = new THREE.Box3().setFromObject(model);
+      const newCenter = newBox.getCenter(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      const fov = camera.fov * (Math.PI / 180);
+      const distance = Math.abs(maxDim / (2 * Math.tan(fov / 2))) * 1.6;
+
+      defaultTarget.copy(newCenter);
+      defaultCameraPos.set(
+        newCenter.x + distance * 0.7,
+        newCenter.y + distance * 0.5,
+        newCenter.z + distance * 0.9
+      );
+
+      camera.near = maxDim / 100;
+      camera.far = maxDim * 100;
+      camera.updateProjectionMatrix();
+
+      resetCamera();
+    }
+
+    function resetCamera() {
+      camera.position.copy(defaultCameraPos);
+      controls.target.copy(defaultTarget);
+      controls.update();
+    }
+
+    // GLBファイル読み込み
+    function loadGLBFile(file) {
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      document.getElementById('file-name').textContent = file.name;
+      document.getElementById('empty-hint').style.display = 'none';
+
+      loader.load(
+        url,
+        (gltf) => {
+          clearCurrentModel();
+          currentModel = gltf.scene;
+          scene.add(currentModel);
+          fitModelToView(currentModel);
+          applyWireframe(document.getElementById('wireframe-toggle').checked);
+
+          // アニメーション設定
+          if (gltf.animations && gltf.animations.length > 0) {
+            animations = gltf.animations;
+            mixer = new THREE.AnimationMixer(currentModel);
+            const animSelect = document.getElementById('anim-select');
+            animSelect.innerHTML = '';
+            animations.forEach((clip, index) => {
+              const option = document.createElement('option');
+              option.value = index;
+              option.textContent = clip.name || `Animation ${index + 1}`;
+              animSelect.appendChild(option);
+            });
+            document.getElementById('anim-group').style.display = 'flex';
+            playAnimation(0);
+          }
+          URL.revokeObjectURL(url);
+        },
+        undefined,
+        (error) => {
+          console.error('GLB読み込みエラー:', error);
+          alert('ファイルの読み込みに失敗しました。有効な .glb / .gltf ファイルか確認してください。');
+          URL.revokeObjectURL(url);
+        }
+      );
+    }
+
+    function playAnimation(index) {
+      if (!mixer || !animations[index]) return;
+      if (activeAction) activeAction.stop();
+      activeAction = mixer.clipAction(animations[index]);
+      activeAction.play();
+      isPlaying = true;
+      document.getElementById('anim-play-btn').textContent = '一時停止';
+    }
+
+    function applyWireframe(enabled) {
+      if (!currentModel) return;
+      currentModel.traverse((child) => {
+        if (child.isMesh && child.material) {
+          const materials = Array.isArray(child.material) ? child.material : [child.material];
+          materials.forEach((mat) => { mat.wireframe = enabled; });
+        }
+      });
+    }
+
+    // UIイベント
+    document.getElementById('file-input').addEventListener('change', (e) => {
+      loadGLBFile(e.target.files[0]);
+    });
+
+    document.getElementById('wireframe-toggle').addEventListener('change', (e) => {
+      applyWireframe(e.target.checked);
+    });
+
+    document.getElementById('autorotate-toggle').addEventListener('change', (e) => {
+      controls.autoRotate = e.target.checked;
+    });
+
+    document.getElementById('grid-toggle').addEventListener('change', (e) => {
+      gridHelper.visible = e.target.checked;
+    });
+
+    document.getElementById('light-slider').addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      dirLight.intensity = val;
+      renderer.toneMappingExposure = val / 1.5;
+    });
+
+    document.getElementById('bg-select').addEventListener('change', (e) => {
+      scene.background = new THREE.Color(e.target.value);
+    });
+
+    document.getElementById('reset-camera-btn').addEventListener('click', resetCamera);
+
+    document.getElementById('anim-select').addEventListener('change', (e) => {
+      playAnimation(parseInt(e.target.value, 10));
+    });
+
+    document.getElementById('anim-play-btn').addEventListener('click', () => {
+      if (!activeAction) return;
+      isPlaying = !isPlaying;
+      activeAction.paused = !isPlaying;
+      document.getElementById('anim-play-btn').textContent = isPlaying ? '一時停止' : '再生';
+    });
+
+    // ドラッグ＆ドロップ
+    const dropOverlay = document.getElementById('drop-overlay');
+    window.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropOverlay.classList.add('active');
+    });
+    window.addEventListener('dragleave', (e) => {
+      if (e.relatedTarget === null) dropOverlay.classList.remove('active');
+    });
+    window.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropOverlay.classList.remove('active');
+      if (e.dataTransfer.files.length > 0) {
+        loadGLBFile(e.dataTransfer.files[0]);
+      }
+    });
+
+    // リサイズ対応
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // 描画ループ
+    function animate() {
+      requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+      if (mixer && isPlaying) mixer.update(delta);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
