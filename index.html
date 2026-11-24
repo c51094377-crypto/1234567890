@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Three.js GLB Viewer</title>
+  <title>Three.js GLB Viewer - L1 Path Loop</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -101,6 +101,10 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    #path-status {
+      font-size: 11px;
+      color: #60a5fa;
+    }
 
     /* ドラッグ＆ドロップオーバーレイ */
     #drop-overlay {
@@ -157,6 +161,19 @@
     <label class="file-btn" for="file-input">GLBファイルを選択</label>
     <input type="file" id="file-input" accept=".glb,.gltf" />
     <div id="file-name">未選択</div>
+
+    <!-- L1〜L72 パス移動コントロール -->
+    <div class="control-group" id="path-group" style="display: none;">
+      <div class="row">
+        <span>L1 パス移動</span>
+        <input type="checkbox" id="path-move-toggle" checked />
+      </div>
+      <div class="row">
+        <span>移動速度</span>
+        <input type="range" id="path-speed-slider" min="0.5" max="15" step="0.5" value="3.0" />
+      </div>
+      <div id="path-status">検出: 0個 / 目標: -</div>
+    </div>
 
     <div class="control-group">
       <div class="row">
@@ -221,7 +238,7 @@
     renderer.toneMappingExposure = 1.0;
     container.appendChild(renderer.domElement);
 
-    // 環境光（PBRマテリアルが綺麗に映るように設定）
+    // 環境光
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
 
@@ -257,6 +274,15 @@
     let defaultTarget = new THREE.Vector3(0, 0, 0);
     const clock = new THREE.Clock();
 
+    // L1〜L72 パス移動用変数
+    let l1Mesh = null;
+    let waypoints = []; // L2〜L72の座標リスト（名前付き）
+    let currentTargetIndex = 0; // waypoints配列のインデックス (0 = L2)
+    let segmentProgress = 0; // 現在の区間での進行度 (0.0 〜 1.0)
+    let segmentStartPos = new THREE.Vector3();
+    let isPathMoving = true;
+    let pathSpeedMultiplier = 3.0; // 1秒あたりの区間移動速度
+
     // モデルの解放処理
     function clearCurrentModel() {
       if (!currentModel) return;
@@ -275,7 +301,94 @@
       mixer = null;
       animations = [];
       activeAction = null;
+      l1Mesh = null;
+      waypoints = [];
       document.getElementById('anim-group').style.display = 'none';
+      document.getElementById('path-group').style.display = 'none';
+    }
+
+    // L1〜L72 の検出とセットアップ
+    function setupLPath(model) {
+      model.updateMatrixWorld(true);
+      const foundNodes = {};
+
+      model.traverse((child) => {
+        // 名前が L1 〜 L72 に一致するオブジェクトを取得
+        if (/^L([1-9]|[1-6][0-9]|7[0-2])$/.test(child.name)) {
+          // 同名ノードがある場合（親グループと子メッシュなど）、メッシュを優先
+          if (!foundNodes[child.name] || child.isMesh) {
+            foundNodes[child.name] = child;
+          }
+        }
+      });
+
+      l1Mesh = foundNodes['L1'] || null;
+      waypoints = [];
+
+      // L2 〜 L72 の座標を順番に格納
+      for (let i = 2; i <= 72; i++) {
+        const node = foundNodes[`L${i}`];
+        if (node) {
+          // 親のローカル座標系に合わせた位置を取得（L1と同じ親ならpositionでOK）
+          const targetPos = new THREE.Vector3();
+          if (l1Mesh && l1Mesh.parent === node.parent) {
+            targetPos.copy(node.position);
+          } else if (l1Mesh && l1Mesh.parent) {
+            // 親階層が異なる場合はワールド座標経由でL1のローカル座標へ変換
+            node.getWorldPosition(targetPos);
+            l1Mesh.parent.worldToLocal(targetPos);
+          } else {
+            targetPos.copy(node.position);
+          }
+          waypoints.push({ name: `L${i}`, position: targetPos });
+        }
+      }
+
+      const pathGroup = document.getElementById('path-group');
+      const statusEl = document.getElementById('path-status');
+
+      if (l1Mesh && waypoints.length > 0) {
+        pathGroup.style.display = 'flex';
+        currentTargetIndex = 0;
+        segmentProgress = 0;
+        segmentStartPos.copy(l1Mesh.position);
+        statusEl.textContent = `L1 + 経由点${waypoints.length}個 / 目標: ${waypoints[0].name}`;
+      } else {
+        pathGroup.style.display = 'none';
+      }
+    }
+
+    // L1の滑らかな移動更新処理
+    function updateL1PathMovement(delta) {
+      if (!isPathMoving || !l1Mesh || waypoints.length === 0) return;
+
+      const target = waypoints[currentTargetIndex];
+      const distance = segmentStartPos.distanceTo(target.position);
+
+      // 距離に応じた一定速度で進むように進行度を計算（距離0の場合は即次へ）
+      if (distance > 0.0001) {
+        // モデルのスケールに左右されにくいよう、区間ごとのステップと距離を組み合わせて滑らかに移動
+        const step = (pathSpeedMultiplier * delta) / Math.max(distance, 0.2);
+        segmentProgress += step;
+      } else {
+        segmentProgress = 1;
+      }
+
+      if (segmentProgress >= 1) {
+        // 目標地点に到達
+        l1Mesh.position.copy(target.position);
+        segmentStartPos.copy(target.position);
+        segmentProgress = 0;
+
+        // 次の目標へ（L72の次はインデックス0＝L2に戻る）
+        currentTargetIndex = (currentTargetIndex + 1) % waypoints.length;
+        document.getElementById('path-status').textContent =
+          `L1 + 経由点${waypoints.length}個 / 目標: ${waypoints[currentTargetIndex].name}`;
+      } else {
+        // イージング（滑らかな加減速）をかけて補間移動
+        const smoothT = segmentProgress * segmentProgress * (3 - 2 * segmentProgress);
+        l1Mesh.position.lerpVectors(segmentStartPos, target.position, smoothT);
+      }
     }
 
     // モデルのセンタリングとカメラ自動調整
@@ -284,7 +397,6 @@
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
 
-      // 底面をY=0、XZを原点へ配置
       model.position.x += (model.position.x - center.x);
       model.position.y += (model.position.y - box.min.y);
       model.position.z += (model.position.z - center.z);
@@ -329,9 +441,10 @@
           currentModel = gltf.scene;
           scene.add(currentModel);
           fitModelToView(currentModel);
+          setupLPath(currentModel);
           applyWireframe(document.getElementById('wireframe-toggle').checked);
 
-          // アニメーション設定
+          // GLB内蔵アニメーション設定
           if (gltf.animations && gltf.animations.length > 0) {
             animations = gltf.animations;
             mixer = new THREE.AnimationMixer(currentModel);
@@ -379,6 +492,14 @@
     // UIイベント
     document.getElementById('file-input').addEventListener('change', (e) => {
       loadGLBFile(e.target.files[0]);
+    });
+
+    document.getElementById('path-move-toggle').addEventListener('change', (e) => {
+      isPathMoving = e.target.checked;
+    });
+
+    document.getElementById('path-speed-slider').addEventListener('input', (e) => {
+      pathSpeedMultiplier = parseFloat(e.target.value);
     });
 
     document.getElementById('wireframe-toggle').addEventListener('change', (e) => {
@@ -445,6 +566,7 @@
       requestAnimationFrame(animate);
       const delta = clock.getDelta();
       if (mixer && isPlaying) mixer.update(delta);
+      updateL1PathMovement(delta);
       controls.update();
       renderer.render(scene, camera);
     }
