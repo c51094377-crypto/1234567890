@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Three.js GLB Viewer - L1~L72 & R1~R72 Loop</title>
+  <title>Three.js GLB Viewer - L1~L72 & R1~R72 Reversible Loop</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -83,6 +83,22 @@
       transition: background 0.2s;
     }
     button.secondary:hover { background: rgba(255, 255, 255, 0.2); }
+    button.reverse-btn {
+      width: 100%;
+      background: rgba(59, 130, 246, 0.22);
+      color: #93c5fd;
+      border: 1px solid rgba(59, 130, 246, 0.45);
+      padding: 7px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+    }
+    button.reverse-btn:hover {
+      background: rgba(59, 130, 246, 0.35);
+      color: #fff;
+    }
     select, input[type="range"] {
       background: #27272a;
       color: #f4f4f5;
@@ -177,6 +193,7 @@
         <span>移動速度</span>
         <input type="range" id="path-speed-slider" min="0.5" max="15" step="0.5" value="3.0" />
       </div>
+      <button class="reverse-btn" id="reverse-dir-btn">⇄ 方向逆転（現在: 1→2）</button>
       <div id="path-status">検出: L 0個 / R 0個</div>
     </div>
 
@@ -284,9 +301,15 @@
       L: { nodes: [], stepOffset: 0, segmentProgress: 0 },
       R: { nodes: [], stepOffset: 0, segmentProgress: 0 }
     };
+    let pathDirection = 1; // 1: 順方向(1→2→…→72), -1: 逆方向(1→72→71→…→2)
     let isPathMoving = true;
     let isSyncRotation = true;
     let pathSpeedMultiplier = 3.0;
+
+    // 正の剰余を返すヘルパー（負のインデックスにも対応）
+    function mod(n, m) {
+      return ((n % m) + m) % m;
+    }
 
     // モデルの解放処理
     function clearCurrentModel() {
@@ -318,7 +341,6 @@
       const foundMap = {};
 
       model.traverse((child) => {
-        // L1〜L72 または R1〜R72 に一致するオブジェクトを検出
         if (/^[LR]([1-9]|[1-6][0-9]|7[0-2])$/.test(child.name)) {
           if (!foundMap[child.name] || child.isMesh) {
             foundMap[child.name] = child;
@@ -358,10 +380,18 @@
 
       if (lCount >= 2 || rCount >= 2) {
         pathGroupEl.style.display = 'flex';
+        updateDirectionUI();
         updatePathStatusText();
       } else {
         pathGroupEl.style.display = 'none';
       }
+    }
+
+    function updateDirectionUI() {
+      const btn = document.getElementById('reverse-dir-btn');
+      btn.textContent = pathDirection === 1
+        ? '⇄ 方向逆転（現在: 1→2）'
+        : '⇄ 方向逆転（現在: 1→72）';
     }
 
     function updatePathStatusText() {
@@ -370,14 +400,33 @@
       const parts = [];
 
       if (lGroup.nodes.length >= 2) {
-        const nextL = lGroup.nodes[(lGroup.stepOffset + 1) % lGroup.nodes.length].name;
-        parts.push(`L(${lGroup.nodes.length}個): L1→${nextL}`);
+        const len = lGroup.nodes.length;
+        const nextL = lGroup.nodes[mod(lGroup.stepOffset + pathDirection, len)].name;
+        parts.push(`L(${len}個): L1→${nextL}`);
       }
       if (rGroup.nodes.length >= 2) {
-        const nextR = rGroup.nodes[(rGroup.stepOffset + 1) % rGroup.nodes.length].name;
-        parts.push(`R(${rGroup.nodes.length}個): R1→${nextR}`);
+        const len = rGroup.nodes.length;
+        const nextR = rGroup.nodes[mod(rGroup.stepOffset + pathDirection, len)].name;
+        parts.push(`R(${len}個): R1→${nextR}`);
       }
       document.getElementById('path-status').textContent = parts.join(' / ');
+    }
+
+    // 方向反転処理（移動の途中でもシームレスに折り返す）
+    function togglePathDirection() {
+      ['L', 'R'].forEach((prefix) => {
+        const group = pathGroups[prefix];
+        const count = group.nodes.length;
+        if (count >= 2) {
+          // 現在の移動先スロットを新しい出発スロットにし、進行度を反転させる
+          group.stepOffset = mod(group.stepOffset + pathDirection, count);
+          group.segmentProgress = group.segmentProgress > 0 ? (1 - group.segmentProgress) : 0;
+        }
+      });
+
+      pathDirection *= -1;
+      updateDirectionUI();
+      updatePathStatusText();
     }
 
     // ワールド座標・回転を各メッシュの親ローカル空間へ変換して適用するヘルパー
@@ -388,14 +437,12 @@
     function applyTransformFromSlot(item, slotA, slotB, t) {
       const mesh = item.mesh;
 
-      // 1. ワールド座標を補間してメッシュのローカル座標へ変換
       _tempPos.lerpVectors(slotA.baseWorldPos, slotB.baseWorldPos, t);
       if (mesh.parent) {
         mesh.parent.worldToLocal(_tempPos);
       }
       mesh.position.copy(_tempPos);
 
-      // 2. ワールド回転を補間してメッシュのローカル回転へ変換
       if (isSyncRotation) {
         _tempQuat.slerpQuaternions(slotA.baseWorldQuat, slotB.baseWorldQuat, t);
         if (mesh.parent) {
@@ -411,8 +458,8 @@
       const count = group.nodes.length;
       if (count < 2) return false;
 
-      const refFrom = group.nodes[group.stepOffset % count];
-      const refTo = group.nodes[(group.stepOffset + 1) % count];
+      const refFrom = group.nodes[mod(group.stepOffset, count)];
+      const refTo = group.nodes[mod(group.stepOffset + pathDirection, count)];
       const distance = refFrom.baseWorldPos.distanceTo(refTo.baseWorldPos);
       const angleDiff = refFrom.baseWorldQuat.angleTo(refTo.baseWorldQuat);
 
@@ -426,15 +473,15 @@
       let stepped = false;
       if (group.segmentProgress >= 1) {
         group.segmentProgress = 0;
-        group.stepOffset = (group.stepOffset + 1) % count;
+        group.stepOffset = mod(group.stepOffset + pathDirection, count);
         stepped = true;
       }
 
       const smoothT = group.segmentProgress * group.segmentProgress * (3 - 2 * group.segmentProgress);
 
       for (let i = 0; i < count; i++) {
-        const fromSlot = group.nodes[(i + group.stepOffset) % count];
-        const toSlot = group.nodes[(i + group.stepOffset + 1) % count];
+        const fromSlot = group.nodes[mod(i + group.stepOffset, count)];
+        const toSlot = group.nodes[mod(i + group.stepOffset + pathDirection, count)];
         applyTransformFromSlot(group.nodes[i], fromSlot, toSlot, smoothT);
       }
 
@@ -571,6 +618,8 @@
     document.getElementById('path-speed-slider').addEventListener('input', (e) => {
       pathSpeedMultiplier = parseFloat(e.target.value);
     });
+
+    document.getElementById('reverse-dir-btn').addEventListener('click', togglePathDirection);
 
     document.getElementById('wireframe-toggle').addEventListener('change', (e) => {
       applyWireframe(e.target.checked);
