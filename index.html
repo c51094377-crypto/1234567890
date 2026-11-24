@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Three.js GLB Viewer - WASD L/R Direction Control</title>
+  <title>Three.js GLB Viewer - Press WASD to Move</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -207,12 +207,8 @@
     <input type="file" id="file-input" accept=".glb,.gltf" />
     <div id="file-name">未選択</div>
 
-    <!-- L1〜L72 & R1〜R72 WASD方向コントロール -->
+    <!-- WASD 移動コントロール -->
     <div class="control-group" id="path-group" style="display: none;">
-      <div class="row">
-        <span>L / R 循環移動</span>
-        <input type="checkbox" id="path-move-toggle" checked />
-      </div>
       <div class="row">
         <span>XYZ角度も同期</span>
         <input type="checkbox" id="path-rot-toggle" checked />
@@ -222,6 +218,9 @@
         <input type="range" id="path-speed-slider" min="0.1" max="15" step="0.1" value="3.0" />
       </div>
 
+      <div style="font-size: 11px; color: #a1a1aa; margin-top: 4px;">
+        キーを押している間だけ移動します (W/A/S/D)
+      </div>
       <!-- WASD キー操作ボタン -->
       <div class="wasd-grid">
         <div></div>
@@ -234,7 +233,7 @@
           <strong>A</strong>
           <span>L:1→2 / R:1→72</span>
         </button>
-        <button class="wasd-btn active" id="btn-s" data-key="s">
+        <button class="wasd-btn" id="btn-s" data-key="s">
           <strong>S</strong>
           <span>L/R: 1→2</span>
         </button>
@@ -244,7 +243,7 @@
         </button>
       </div>
 
-      <div id="path-status">検出: L 0個 / R 0個</div>
+      <div id="path-status">停止中 (キーを押してください)</div>
     </div>
 
     <div class="control-group">
@@ -346,13 +345,12 @@
     let defaultTarget = new THREE.Vector3(0, 0, 0);
     const clock = new THREE.Clock();
 
-    // L1〜L72 と R1〜R72 の循環移動グループ管理（それぞれ個別の direction を持つ）
-    // direction: 1 = 1→2 (順方向), -1 = 1→72 (逆方向)
+    // 循環移動グループ管理
     let pathGroups = {
       L: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1 },
       R: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1 }
     };
-    let isPathMoving = true;
+    let activeKey = null; // 現在押されているWASDキー ('w', 'a', 's', 'd', または null)
     let isSyncRotation = true;
     let pathSpeedMultiplier = 3.0;
 
@@ -381,6 +379,7 @@
       activeAction = null;
       pathGroups.L = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1 };
       pathGroups.R = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1 };
+      activeKey = null;
       document.getElementById('anim-group').style.display = 'none';
       document.getElementById('path-group').style.display = 'none';
     }
@@ -421,7 +420,7 @@
           nodes,
           stepOffset: 0,
           segmentProgress: 0,
-          direction: 1 // 初期状態は S (1→2)
+          direction: 1
         };
       });
 
@@ -431,59 +430,43 @@
 
       if (lCount >= 2 || rCount >= 2) {
         pathGroupEl.style.display = 'flex';
-        updateActiveWASDButton('s');
         updatePathStatusText();
       } else {
         pathGroupEl.style.display = 'none';
       }
     }
 
-    // 個別グループの進行方向をシームレスに変更する
-    function setGroupDirection(group, newDir) {
-      if (group.direction === newDir) return;
-      const count = group.nodes.length;
-      if (count >= 2) {
-        // 移動の途中なら現在区間を折り返す
-        group.stepOffset = mod(group.stepOffset + group.direction, count);
-        group.segmentProgress = group.segmentProgress > 0 ? (1 - group.segmentProgress) : 0;
-      }
-      group.direction = newDir;
-    }
+    // キー入力に応じた L / R の方向を設定
+    function setKeyDirections(key) {
+      activeKey = key;
+      const lDir = (key === 'w' || key === 'd') ? -1 : 1; // W/Dなら1→72、S/Aなら1→2
+      const rDir = (key === 'w' || key === 'a') ? -1 : 1; // W/Aなら1→72、S/Dなら1→2
 
-    // WASDモード適用
-    function applyWASDMode(key) {
-      const k = key.toLowerCase();
-      if (k === 'w') {
-        // W: 1→72
-        setGroupDirection(pathGroups.L, -1);
-        setGroupDirection(pathGroups.R, -1);
-      } else if (k === 's') {
-        // S: 1→2
-        setGroupDirection(pathGroups.L, 1);
-        setGroupDirection(pathGroups.R, 1);
-      } else if (k === 'a') {
-        // A: Lは1→2、Rは1→72
-        setGroupDirection(pathGroups.L, 1);
-        setGroupDirection(pathGroups.R, -1);
-      } else if (k === 'd') {
-        // D: Lは1→72、Rは1→2
-        setGroupDirection(pathGroups.L, -1);
-        setGroupDirection(pathGroups.R, 1);
-      } else {
-        return;
-      }
+      ['L', 'R'].forEach((prefix, idx) => {
+        const group = pathGroups[prefix];
+        const newDir = idx === 0 ? lDir : rDir;
+        const count = group.nodes.length;
 
-      updateActiveWASDButton(k);
+        if (count >= 2 && group.direction !== newDir) {
+          group.stepOffset = mod(group.stepOffset + group.direction, count);
+          group.segmentProgress = group.segmentProgress > 0 ? (1 - group.segmentProgress) : 0;
+          group.direction = newDir;
+        }
+      });
+
+      // UIボタンのハイライト更新
+      document.querySelectorAll('.wasd-btn').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.key === key);
+      });
       updatePathStatusText();
     }
 
-    function updateActiveWASDButton(activeKey) {
-      document.querySelectorAll('.wasd-btn').forEach((btn) => {
-        btn.classList.toggle('active', btn.dataset.key === activeKey);
-      });
-    }
-
     function updatePathStatusText() {
+      if (!activeKey) {
+        document.getElementById('path-status').textContent = '停止中 (キーを押してください)';
+        return;
+      }
+
       const lGroup = pathGroups.L;
       const rGroup = pathGroups.R;
       const parts = [];
@@ -491,14 +474,12 @@
       if (lGroup.nodes.length >= 2) {
         const len = lGroup.nodes.length;
         const nextL = lGroup.nodes[mod(lGroup.stepOffset + lGroup.direction, len)].name;
-        const modeL = lGroup.direction === 1 ? '1→2' : '1→72';
-        parts.push(`L[${modeL}]: L1→${nextL}`);
+        parts.push(`L(${lGroup.direction === 1 ? '1→2' : '1→72'}): L1→${nextL}`);
       }
       if (rGroup.nodes.length >= 2) {
         const len = rGroup.nodes.length;
         const nextR = rGroup.nodes[mod(rGroup.stepOffset + rGroup.direction, len)].name;
-        const modeR = rGroup.direction === 1 ? '1→2' : '1→72';
-        parts.push(`R[${modeR}]: R1→${nextR}`);
+        parts.push(`R(${rGroup.direction === 1 ? '1→2' : '1→72'}): R1→${nextR}`);
       }
       document.getElementById('path-status').textContent = parts.join(' / ');
     }
@@ -527,13 +508,12 @@
       }
     }
 
-    // 1グループ分の等速・連続循環移動更新
+    // 1グループ分の等速循環移動更新
     function updateGroupMovement(group, delta) {
       const count = group.nodes.length;
-      if (count < 2) return false;
+      if (count < 2) return;
 
       const dir = group.direction;
-      let stepped = false;
       let remainingBudget = pathSpeedMultiplier * delta;
 
       let safetyGuard = 0;
@@ -551,7 +531,6 @@
           remainingBudget -= remainingInSegment;
           group.segmentProgress = 0;
           group.stepOffset = mod(group.stepOffset + dir, count);
-          stepped = true;
         } else {
           group.segmentProgress += remainingBudget / segmentLength;
           remainingBudget = 0;
@@ -559,24 +538,18 @@
       }
 
       const t = group.segmentProgress;
-
       for (let i = 0; i < count; i++) {
         const fromSlot = group.nodes[mod(i + group.stepOffset, count)];
         const toSlot = group.nodes[mod(i + group.stepOffset + dir, count)];
         applyTransformFromSlot(group.nodes[i], fromSlot, toSlot, t);
       }
-
-      return stepped;
     }
 
-    // L・R全グループの更新
+    // 全グループの更新（activeKeyが押されている時だけ動かす）
     function updateAllPathsMovement(delta) {
-      if (!isPathMoving) return;
-      const steppedL = updateGroupMovement(pathGroups.L, delta);
-      const steppedR = updateGroupMovement(pathGroups.R, delta);
-      if (steppedL || steppedR) {
-        updatePathStatusText();
-      }
+      if (!activeKey) return; // ← 何もキーを押していなかったら動かさない
+      updateGroupMovement(pathGroups.L, delta);
+      updateGroupMovement(pathGroups.R, delta);
     }
 
     // モデルのセンタリングとカメラ自動調整
@@ -681,10 +654,6 @@
       loadGLBFile(e.target.files[0]);
     });
 
-    document.getElementById('path-move-toggle').addEventListener('change', (e) => {
-      isPathMoving = e.target.checked;
-    });
-
     document.getElementById('path-rot-toggle').addEventListener('change', (e) => {
       isSyncRotation = e.target.checked;
       if (!isSyncRotation) {
@@ -700,21 +669,35 @@
       pathSpeedMultiplier = parseFloat(e.target.value);
     });
 
-    // WASD ボタンクリック操作
-    document.querySelectorAll('.wasd-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        applyWASDMode(btn.dataset.key);
-      });
-    });
-
-    // WASD キーボード操作
+    // キーボードを押している間だけ移動（keyupで停止）
     window.addEventListener('keydown', (e) => {
-      // 入力フォームにフォーカスがある場合は無視
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
       const key = e.key.toLowerCase();
       if (['w', 'a', 's', 'd'].includes(key)) {
-        applyWASDMode(key);
+        setKeyDirections(key);
       }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      const key = e.key.toLowerCase();
+      if (key === activeKey) {
+        activeKey = null; // 押していたキーを離したら停止
+        document.querySelectorAll('.wasd-btn').forEach((btn) => btn.classList.remove('active'));
+        updatePathStatusText();
+      }
+    });
+
+    // 画面上のボタンをクリックした時の処理（押している間動かすため、マウスダウンで開始、マウスアップで停止）
+    document.querySelectorAll('.wasd-btn').forEach((btn) => {
+      const key = btn.dataset.key;
+      btn.addEventListener('mousedown', () => setKeyDirections(key));
+      btn.addEventListener('mouseup', () => {
+        if (activeKey === key) {
+          activeKey = null;
+          btn.classList.remove('active');
+          updatePathStatusText();
+        }
+      });
     });
 
     document.getElementById('wireframe-toggle').addEventListener('change', (e) => {
