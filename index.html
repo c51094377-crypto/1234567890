@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Three.js GLB Viewer - L1~L72 All Loop</title>
+  <title>Three.js GLB Viewer - L1~L72 & R1~R72 Loop</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -104,6 +104,7 @@
     #path-status {
       font-size: 11px;
       color: #60a5fa;
+      line-height: 1.4;
     }
 
     /* ドラッグ＆ドロップオーバーレイ */
@@ -162,10 +163,10 @@
     <input type="file" id="file-input" accept=".glb,.gltf" />
     <div id="file-name">未選択</div>
 
-    <!-- L1〜L72 全体ループコントロール -->
+    <!-- L1〜L72 & R1〜R72 全体ループコントロール -->
     <div class="control-group" id="path-group" style="display: none;">
       <div class="row">
-        <span>L1〜L72 循環移動</span>
+        <span>L / R 循環移動</span>
         <input type="checkbox" id="path-move-toggle" checked />
       </div>
       <div class="row">
@@ -176,7 +177,7 @@
         <span>移動速度</span>
         <input type="range" id="path-speed-slider" min="0.5" max="15" step="0.5" value="3.0" />
       </div>
-      <div id="path-status">検出: 0個 / ステップ: 0</div>
+      <div id="path-status">検出: L 0個 / R 0個</div>
     </div>
 
     <div class="control-group">
@@ -278,10 +279,11 @@
     let defaultTarget = new THREE.Vector3(0, 0, 0);
     const clock = new THREE.Clock();
 
-    // L1〜L72 全体循環移動用変数
-    let lNodes = []; // { name, mesh, baseWorldPos, baseWorldQuat, initialLocalQuat } の配列
-    let stepOffset = 0; // 現在何個分ズレた位置にいるか (0 〜 lNodes.length - 1)
-    let segmentProgress = 0; // 現在の1ステップ内の進行度 (0.0 〜 1.0)
+    // L1〜L72 と R1〜R72 の循環移動グループ管理
+    let pathGroups = {
+      L: { nodes: [], stepOffset: 0, segmentProgress: 0 },
+      R: { nodes: [], stepOffset: 0, segmentProgress: 0 }
+    };
     let isPathMoving = true;
     let isSyncRotation = true;
     let pathSpeedMultiplier = 3.0;
@@ -304,54 +306,78 @@
       mixer = null;
       animations = [];
       activeAction = null;
-      lNodes = [];
+      pathGroups.L = { nodes: [], stepOffset: 0, segmentProgress: 0 };
+      pathGroups.R = { nodes: [], stepOffset: 0, segmentProgress: 0 };
       document.getElementById('anim-group').style.display = 'none';
       document.getElementById('path-group').style.display = 'none';
     }
 
-    // L1〜L72 の全メッシュ検出と初期トランスフォームの記録
-    function setupLPath(model) {
+    // L1〜L72 および R1〜R72 の全メッシュ検出と初期トランスフォームの記録
+    function setupPaths(model) {
       model.updateMatrixWorld(true);
       const foundMap = {};
 
       model.traverse((child) => {
-        if (/^L([1-9]|[1-6][0-9]|7[0-2])$/.test(child.name)) {
+        // L1〜L72 または R1〜R72 に一致するオブジェクトを検出
+        if (/^[LR]([1-9]|[1-6][0-9]|7[0-2])$/.test(child.name)) {
           if (!foundMap[child.name] || child.isMesh) {
             foundMap[child.name] = child;
           }
         }
       });
 
-      lNodes = [];
-      for (let i = 1; i <= 72; i++) {
-        const mesh = foundMap[`L${i}`];
-        if (mesh) {
-          const baseWorldPos = new THREE.Vector3();
-          const baseWorldQuat = new THREE.Quaternion();
-          mesh.getWorldPosition(baseWorldPos);
-          mesh.getWorldQuaternion(baseWorldQuat);
+      ['L', 'R'].forEach((prefix) => {
+        const nodes = [];
+        for (let i = 1; i <= 72; i++) {
+          const mesh = foundMap[`${prefix}${i}`];
+          if (mesh) {
+            const baseWorldPos = new THREE.Vector3();
+            const baseWorldQuat = new THREE.Quaternion();
+            mesh.getWorldPosition(baseWorldPos);
+            mesh.getWorldQuaternion(baseWorldQuat);
 
-          lNodes.push({
-            name: `L${i}`,
-            mesh,
-            baseWorldPos,
-            baseWorldQuat,
-            initialLocalQuat: mesh.quaternion.clone()
-          });
+            nodes.push({
+              name: `${prefix}${i}`,
+              mesh,
+              baseWorldPos,
+              baseWorldQuat,
+              initialLocalQuat: mesh.quaternion.clone()
+            });
+          }
         }
-      }
+        pathGroups[prefix] = {
+          nodes,
+          stepOffset: 0,
+          segmentProgress: 0
+        };
+      });
 
-      const pathGroup = document.getElementById('path-group');
-      const statusEl = document.getElementById('path-status');
+      const lCount = pathGroups.L.nodes.length;
+      const rCount = pathGroups.R.nodes.length;
+      const pathGroupEl = document.getElementById('path-group');
 
-      if (lNodes.length >= 2) {
-        pathGroup.style.display = 'flex';
-        stepOffset = 0;
-        segmentProgress = 0;
-        statusEl.textContent = `検出: ${lNodes.length}個 / L1→${lNodes[1].name}`;
+      if (lCount >= 2 || rCount >= 2) {
+        pathGroupEl.style.display = 'flex';
+        updatePathStatusText();
       } else {
-        pathGroup.style.display = 'none';
+        pathGroupEl.style.display = 'none';
       }
+    }
+
+    function updatePathStatusText() {
+      const lGroup = pathGroups.L;
+      const rGroup = pathGroups.R;
+      const parts = [];
+
+      if (lGroup.nodes.length >= 2) {
+        const nextL = lGroup.nodes[(lGroup.stepOffset + 1) % lGroup.nodes.length].name;
+        parts.push(`L(${lGroup.nodes.length}個): L1→${nextL}`);
+      }
+      if (rGroup.nodes.length >= 2) {
+        const nextR = rGroup.nodes[(rGroup.stepOffset + 1) % rGroup.nodes.length].name;
+        parts.push(`R(${rGroup.nodes.length}個): R1→${nextR}`);
+      }
+      document.getElementById('path-status').textContent = parts.join(' / ');
     }
 
     // ワールド座標・回転を各メッシュの親ローカル空間へ変換して適用するヘルパー
@@ -380,41 +406,48 @@
       }
     }
 
-    // L1〜L72 全体の滑らかな循環移動更新
-    function updateAllLPathMovement(delta) {
-      const count = lNodes.length;
-      if (!isPathMoving || count < 2) return;
+    // 1グループ分の滑らかな循環移動更新
+    function updateGroupMovement(group, delta) {
+      const count = group.nodes.length;
+      if (count < 2) return false;
 
-      // L1の現在区間での移動距離・角度差を基準に進行スピードを決定
-      const refFrom = lNodes[stepOffset % count];
-      const refTo = lNodes[(stepOffset + 1) % count];
+      const refFrom = group.nodes[group.stepOffset % count];
+      const refTo = group.nodes[(group.stepOffset + 1) % count];
       const distance = refFrom.baseWorldPos.distanceTo(refTo.baseWorldPos);
       const angleDiff = refFrom.baseWorldQuat.angleTo(refTo.baseWorldQuat);
 
       if (distance > 0.0001 || (isSyncRotation && angleDiff > 0.001)) {
         const effectiveDist = Math.max(distance, angleDiff * 0.5, 0.2);
-        segmentProgress += (pathSpeedMultiplier * delta) / effectiveDist;
+        group.segmentProgress += (pathSpeedMultiplier * delta) / effectiveDist;
       } else {
-        segmentProgress = 1;
+        group.segmentProgress = 1;
       }
 
-      if (segmentProgress >= 1) {
-        segmentProgress = 0;
-        stepOffset = (stepOffset + 1) % count;
-
-        const nextTargetSlot = lNodes[(stepOffset + 1) % count];
-        document.getElementById('path-status').textContent =
-          `検出: ${count}個 / L1→${nextTargetSlot.name}`;
+      let stepped = false;
+      if (group.segmentProgress >= 1) {
+        group.segmentProgress = 0;
+        group.stepOffset = (group.stepOffset + 1) % count;
+        stepped = true;
       }
 
-      // イージング（Smoothstep）
-      const smoothT = segmentProgress * segmentProgress * (3 - 2 * segmentProgress);
+      const smoothT = group.segmentProgress * group.segmentProgress * (3 - 2 * group.segmentProgress);
 
-      // 全72個のメッシュをそれぞれの「現在スロット」から「次のスロット」へ一斉に補間移動
       for (let i = 0; i < count; i++) {
-        const fromSlot = lNodes[(i + stepOffset) % count];
-        const toSlot = lNodes[(i + stepOffset + 1) % count];
-        applyTransformFromSlot(lNodes[i], fromSlot, toSlot, smoothT);
+        const fromSlot = group.nodes[(i + group.stepOffset) % count];
+        const toSlot = group.nodes[(i + group.stepOffset + 1) % count];
+        applyTransformFromSlot(group.nodes[i], fromSlot, toSlot, smoothT);
+      }
+
+      return stepped;
+    }
+
+    // L・R全グループの更新
+    function updateAllPathsMovement(delta) {
+      if (!isPathMoving) return;
+      const steppedL = updateGroupMovement(pathGroups.L, delta);
+      const steppedR = updateGroupMovement(pathGroups.R, delta);
+      if (steppedL || steppedR) {
+        updatePathStatusText();
       }
     }
 
@@ -468,7 +501,7 @@
           currentModel = gltf.scene;
           scene.add(currentModel);
           fitModelToView(currentModel);
-          setupLPath(currentModel);
+          setupPaths(currentModel);
           applyWireframe(document.getElementById('wireframe-toggle').checked);
 
           if (gltf.animations && gltf.animations.length > 0) {
@@ -527,8 +560,10 @@
     document.getElementById('path-rot-toggle').addEventListener('change', (e) => {
       isSyncRotation = e.target.checked;
       if (!isSyncRotation) {
-        lNodes.forEach((item) => {
-          item.mesh.quaternion.copy(item.initialLocalQuat);
+        ['L', 'R'].forEach((prefix) => {
+          pathGroups[prefix].nodes.forEach((item) => {
+            item.mesh.quaternion.copy(item.initialLocalQuat);
+          });
         });
       }
     });
@@ -601,7 +636,7 @@
       requestAnimationFrame(animate);
       const delta = clock.getDelta();
       if (mixer && isPlaying) mixer.update(delta);
-      updateAllLPathMovement(delta);
+      updateAllPathsMovement(delta);
       controls.update();
       renderer.render(scene, camera);
     }
