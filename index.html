@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Three.js GLB Viewer - L1~L72 & R1~R72 Reversible Loop</title>
+  <title>Three.js GLB Viewer - Continuous Smooth Loop</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -191,7 +191,7 @@
       </div>
       <div class="row">
         <span>移動速度</span>
-        <input type="range" id="path-speed-slider" min="0.5" max="15" step="0.5" value="3.0" />
+        <input type="range" id="path-speed-slider" min="0.1" max="15" step="0.1" value="3.0" />
       </div>
       <button class="reverse-btn" id="reverse-dir-btn">⇄ 方向逆転（現在: 1→2）</button>
       <div id="path-status">検出: L 0個 / R 0個</div>
@@ -306,7 +306,7 @@
     let isSyncRotation = true;
     let pathSpeedMultiplier = 3.0;
 
-    // 正の剰余を返すヘルパー（負のインデックスにも対応）
+    // 正の剰余を返すヘルパー
     function mod(n, m) {
       return ((n % m) + m) % m;
     }
@@ -412,13 +412,12 @@
       document.getElementById('path-status').textContent = parts.join(' / ');
     }
 
-    // 方向反転処理（移動の途中でもシームレスに折り返す）
+    // 方向反転処理
     function togglePathDirection() {
       ['L', 'R'].forEach((prefix) => {
         const group = pathGroups[prefix];
         const count = group.nodes.length;
         if (count >= 2) {
-          // 現在の移動先スロットを新しい出発スロットにし、進行度を反転させる
           group.stepOffset = mod(group.stepOffset + pathDirection, count);
           group.segmentProgress = group.segmentProgress > 0 ? (1 - group.segmentProgress) : 0;
         }
@@ -453,36 +452,47 @@
       }
     }
 
-    // 1グループ分の滑らかな循環移動更新
+    // 1グループ分の等速・連続循環移動更新（ポイントで一切減速しない）
     function updateGroupMovement(group, delta) {
       const count = group.nodes.length;
       if (count < 2) return false;
 
-      const refFrom = group.nodes[mod(group.stepOffset, count)];
-      const refTo = group.nodes[mod(group.stepOffset + pathDirection, count)];
-      const distance = refFrom.baseWorldPos.distanceTo(refTo.baseWorldPos);
-      const angleDiff = refFrom.baseWorldQuat.angleTo(refTo.baseWorldQuat);
-
-      if (distance > 0.0001 || (isSyncRotation && angleDiff > 0.001)) {
-        const effectiveDist = Math.max(distance, angleDiff * 0.5, 0.2);
-        group.segmentProgress += (pathSpeedMultiplier * delta) / effectiveDist;
-      } else {
-        group.segmentProgress = 1;
-      }
-
       let stepped = false;
-      if (group.segmentProgress >= 1) {
-        group.segmentProgress = 0;
-        group.stepOffset = mod(group.stepOffset + pathDirection, count);
-        stepped = true;
+      // 1フレーム分の移動予算（速度 × 経過時間）
+      let remainingBudget = pathSpeedMultiplier * delta;
+
+      // 区間をまたいだ場合も余剰分を次の区間へ引き継いで完全に途切れなく進む
+      let safetyGuard = 0;
+      while (remainingBudget > 0 && safetyGuard < count) {
+        safetyGuard++;
+        const refFrom = group.nodes[mod(group.stepOffset, count)];
+        const refTo = group.nodes[mod(group.stepOffset + pathDirection, count)];
+        const distance = refFrom.baseWorldPos.distanceTo(refTo.baseWorldPos);
+        const angleDiff = refFrom.baseWorldQuat.angleTo(refTo.baseWorldQuat);
+
+        // 区間の実効長さ（極端に小さい値で割らないよう下限を設定）
+        const segmentLength = Math.max(distance, angleDiff * 0.5, 0.001);
+        const remainingInSegment = (1 - group.segmentProgress) * segmentLength;
+
+        if (remainingBudget >= remainingInSegment) {
+          // 次のポイントに到達し、余った移動量で次の区間へそのまま進む
+          remainingBudget -= remainingInSegment;
+          group.segmentProgress = 0;
+          group.stepOffset = mod(group.stepOffset + pathDirection, count);
+          stepped = true;
+        } else {
+          group.segmentProgress += remainingBudget / segmentLength;
+          remainingBudget = 0;
+        }
       }
 
-      const smoothT = group.segmentProgress * group.segmentProgress * (3 - 2 * group.segmentProgress);
+      // イージングなしの等速線形補間（t = segmentProgress）でポイントを滑らかに通過
+      const t = group.segmentProgress;
 
       for (let i = 0; i < count; i++) {
         const fromSlot = group.nodes[mod(i + group.stepOffset, count)];
         const toSlot = group.nodes[mod(i + group.stepOffset + pathDirection, count)];
-        applyTransformFromSlot(group.nodes[i], fromSlot, toSlot, smoothT);
+        applyTransformFromSlot(group.nodes[i], fromSlot, toSlot, t);
       }
 
       return stepped;
