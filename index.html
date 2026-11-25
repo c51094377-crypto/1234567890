@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Three.js GLB Viewer - Press WASD to Move</title>
+  <title>Three.js GLB Viewer - L/R 79 with Inertia</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -207,31 +207,35 @@
     <input type="file" id="file-input" accept=".glb,.gltf" />
     <div id="file-name">未選択</div>
 
-    <!-- WASD 移動コントロール -->
+    <!-- WASD 慣性移動コントロール -->
     <div class="control-group" id="path-group" style="display: none;">
       <div class="row">
         <span>XYZ角度も同期</span>
         <input type="checkbox" id="path-rot-toggle" checked />
       </div>
       <div class="row">
-        <span>移動速度</span>
+        <span>最高速度</span>
         <input type="range" id="path-speed-slider" min="0.1" max="15" step="0.1" value="3.0" />
       </div>
+      <div class="row">
+        <span>慣性（滑らかさ）</span>
+        <input type="range" id="inertia-slider" min="1" max="10" step="0.5" value="4.0" />
+      </div>
 
-      <div style="font-size: 11px; color: #a1a1aa; margin-top: 4px;">
-        キーを押している間だけ移動します (W/A/S/D)
+      <div style="font-size: 11px; color: #a1a1aa; margin-top: 2px;">
+        WASDで慣性つき移動
       </div>
       <!-- WASD キー操作ボタン -->
       <div class="wasd-grid">
         <div></div>
         <button class="wasd-btn" id="btn-w" data-key="w">
           <strong>W</strong>
-          <span>L/R: 1→72</span>
+          <span>L/R: 1→79</span>
         </button>
         <div></div>
         <button class="wasd-btn" id="btn-a" data-key="a">
           <strong>A</strong>
-          <span>L:1→2 / R:1→72</span>
+          <span>L:1→2 / R:1→79</span>
         </button>
         <button class="wasd-btn" id="btn-s" data-key="s">
           <strong>S</strong>
@@ -239,11 +243,11 @@
         </button>
         <button class="wasd-btn" id="btn-d" data-key="d">
           <strong>D</strong>
-          <span>L:1→72 / R:1→2</span>
+          <span>L:1→79 / R:1→2</span>
         </button>
       </div>
 
-      <div id="path-status">停止中 (キーを押してください)</div>
+      <div id="path-status">停止中 (慣性待機)</div>
     </div>
 
     <div class="control-group">
@@ -345,14 +349,15 @@
     let defaultTarget = new THREE.Vector3(0, 0, 0);
     const clock = new THREE.Clock();
 
-    // 循環移動グループ管理
+    // L1〜L79 と R1〜R79 の循環移動グループ管理（慣性用 currentSpeed を追加）
     let pathGroups = {
-      L: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1 },
-      R: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1 }
+      L: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1 },
+      R: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1 }
     };
-    let activeKey = null; // 現在押されているWASDキー ('w', 'a', 's', 'd', または null)
+    let activeKey = null;
     let isSyncRotation = true;
     let pathSpeedMultiplier = 3.0;
+    let inertiaFactor = 4.0; // 慣性の強さ（値が大きいほどピタッと止まり、小さいほどスーッと滑る）
 
     // 正の剰余を返すヘルパー
     function mod(n, m) {
@@ -377,29 +382,34 @@
       mixer = null;
       animations = [];
       activeAction = null;
-      pathGroups.L = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1 };
-      pathGroups.R = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1 };
+      pathGroups.L = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1 };
+      pathGroups.R = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1 };
       activeKey = null;
       document.getElementById('anim-group').style.display = 'none';
       document.getElementById('path-group').style.display = 'none';
     }
 
-    // L1〜L72 および R1〜R72 の全メッシュ検出と初期トランスフォームの記録
+    // L1〜L79 および R1〜R79 の全メッシュ検出（1〜79に対応）
     function setupPaths(model) {
       model.updateMatrixWorld(true);
       const foundMap = {};
 
       model.traverse((child) => {
-        if (/^[LR]([1-9]|[1-6][0-9]|7[0-2])$/.test(child.name)) {
-          if (!foundMap[child.name] || child.isMesh) {
-            foundMap[child.name] = child;
+        const match = child.name.match(/^([LR])([1-9][0-9]?)$/);
+        if (match) {
+          const prefix = match[1];
+          const num = parseInt(match[2], 10);
+          if (num >= 1 && num <= 79) {
+            if (!foundMap[child.name] || child.isMesh) {
+              foundMap[child.name] = child;
+            }
           }
         }
       });
 
       ['L', 'R'].forEach((prefix) => {
         const nodes = [];
-        for (let i = 1; i <= 72; i++) {
+        for (let i = 1; i <= 79; i++) {
           const mesh = foundMap[`${prefix}${i}`];
           if (mesh) {
             const baseWorldPos = new THREE.Vector3();
@@ -420,7 +430,9 @@
           nodes,
           stepOffset: 0,
           segmentProgress: 0,
-          direction: 1
+          direction: 1,
+          currentSpeed: 0,
+          targetDirection: 1
         };
       });
 
@@ -436,25 +448,15 @@
       }
     }
 
-    // キー入力に応じた L / R の方向を設定
+    // キー入力に応じた目標方向を設定
     function setKeyDirections(key) {
       activeKey = key;
-      const lDir = (key === 'w' || key === 'd') ? -1 : 1; // W/Dなら1→72、S/Aなら1→2
-      const rDir = (key === 'w' || key === 'a') ? -1 : 1; // W/Aなら1→72、S/Dなら1→2
+      const lTargetDir = (key === 'w' || key === 'd') ? -1 : 1; // W/D: 1→79(-1), S/A: 1→2(1)
+      const rTargetDir = (key === 'w' || key === 'a') ? -1 : 1; // W/A: 1→79(-1), S/D: 1→2(1)
 
-      ['L', 'R'].forEach((prefix, idx) => {
-        const group = pathGroups[prefix];
-        const newDir = idx === 0 ? lDir : rDir;
-        const count = group.nodes.length;
+      pathGroups.L.targetDirection = lTargetDir;
+      pathGroups.R.targetDirection = rTargetDir;
 
-        if (count >= 2 && group.direction !== newDir) {
-          group.stepOffset = mod(group.stepOffset + group.direction, count);
-          group.segmentProgress = group.segmentProgress > 0 ? (1 - group.segmentProgress) : 0;
-          group.direction = newDir;
-        }
-      });
-
-      // UIボタンのハイライト更新
       document.querySelectorAll('.wasd-btn').forEach((btn) => {
         btn.classList.toggle('active', btn.dataset.key === key);
       });
@@ -462,8 +464,8 @@
     }
 
     function updatePathStatusText() {
-      if (!activeKey) {
-        document.getElementById('path-status').textContent = '停止中 (キーを押してください)';
+      if (!activeKey && pathGroups.L.currentSpeed < 0.01 && pathGroups.R.currentSpeed < 0.01) {
+        document.getElementById('path-status').textContent = '停止中 (慣性待機)';
         return;
       }
 
@@ -474,12 +476,12 @@
       if (lGroup.nodes.length >= 2) {
         const len = lGroup.nodes.length;
         const nextL = lGroup.nodes[mod(lGroup.stepOffset + lGroup.direction, len)].name;
-        parts.push(`L(${lGroup.direction === 1 ? '1→2' : '1→72'}): L1→${nextL}`);
+        parts.push(`L(${lGroup.direction === 1 ? '1→2' : '1→79'}): L1→${nextL}`);
       }
       if (rGroup.nodes.length >= 2) {
         const len = rGroup.nodes.length;
         const nextR = rGroup.nodes[mod(rGroup.stepOffset + rGroup.direction, len)].name;
-        parts.push(`R(${rGroup.direction === 1 ? '1→2' : '1→72'}): R1→${nextR}`);
+        parts.push(`R(${rGroup.direction === 1 ? '1→2' : '1→79'}): R1→${nextR}`);
       }
       document.getElementById('path-status').textContent = parts.join(' / ');
     }
@@ -508,13 +510,31 @@
       }
     }
 
-    // 1グループ分の等速循環移動更新
+    // 慣性つきグループ更新
     function updateGroupMovement(group, delta) {
       const count = group.nodes.length;
       if (count < 2) return;
 
+      // 目標速度：キーが押されているなら pathSpeedMultiplier、離されているなら 0
+      const targetSpeed = activeKey ? pathSpeedMultiplier : 0;
+
+      // 慣性（加速度/減衰）：現在速度を目標速度へスムーズに近づける
+      group.currentSpeed += (targetSpeed - group.currentSpeed) * Math.min(1.0, inertiaFactor * delta);
+
+      if (group.currentSpeed < 0.001) {
+        group.currentSpeed = 0;
+        return;
+      }
+
+      // 逆方向へキーが変わった瞬間の方向切替処理
+      if (activeKey && group.direction !== group.targetDirection) {
+        group.stepOffset = mod(group.stepOffset + group.direction, count);
+        group.segmentProgress = group.segmentProgress > 0 ? (1 - group.segmentProgress) : 0;
+        group.direction = group.targetDirection;
+      }
+
       const dir = group.direction;
-      let remainingBudget = pathSpeedMultiplier * delta;
+      let remainingBudget = group.currentSpeed * delta;
 
       let safetyGuard = 0;
       while (remainingBudget > 0 && safetyGuard < count) {
@@ -545,11 +565,11 @@
       }
     }
 
-    // 全グループの更新（activeKeyが押されている時だけ動かす）
+    // 全グループの更新
     function updateAllPathsMovement(delta) {
-      if (!activeKey) return; // ← 何もキーを押していなかったら動かさない
       updateGroupMovement(pathGroups.L, delta);
       updateGroupMovement(pathGroups.R, delta);
+      if (Math.random() < 0.1) updatePathStatusText();
     }
 
     // モデルのセンタリングとカメラ自動調整
@@ -669,7 +689,11 @@
       pathSpeedMultiplier = parseFloat(e.target.value);
     });
 
-    // キーボードを押している間だけ移動（keyupで停止）
+    document.getElementById('inertia-slider').addEventListener('input', (e) => {
+      inertiaFactor = parseFloat(e.target.value);
+    });
+
+    // キーボード操作（押すと加速、離すと慣性で減速）
     window.addEventListener('keydown', (e) => {
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
       const key = e.key.toLowerCase();
@@ -681,13 +705,12 @@
     window.addEventListener('keyup', (e) => {
       const key = e.key.toLowerCase();
       if (key === activeKey) {
-        activeKey = null; // 押していたキーを離したら停止
+        activeKey = null; // 離すと目標速度が0になり、慣性で減速しながら停止
         document.querySelectorAll('.wasd-btn').forEach((btn) => btn.classList.remove('active'));
-        updatePathStatusText();
       }
     });
 
-    // 画面上のボタンをクリックした時の処理（押している間動かすため、マウスダウンで開始、マウスアップで停止）
+    // 画面ボタン操作
     document.querySelectorAll('.wasd-btn').forEach((btn) => {
       const key = btn.dataset.key;
       btn.addEventListener('mousedown', () => setKeyDirections(key));
@@ -695,7 +718,6 @@
         if (activeKey === key) {
           activeKey = null;
           btn.classList.remove('active');
-          updatePathStatusText();
         }
       });
     });
