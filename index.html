@@ -228,7 +228,7 @@
         <div></div>
         <button class="wasd-btn" id="btn-w" data-key="w">
           <strong>W</strong>
-          <span>L/R: 1→39</span>
+          <span>L/R: 1→79</span>
         </button>
         <div></div>
         <button class="wasd-btn" id="btn-a" data-key="a">
@@ -344,8 +344,8 @@
     const clock = new THREE.Clock();
 
     let pathGroups = {
-      L: { nodes: [], progress: 0, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 },
-      R: { nodes: [], progress: 0, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 }
+      L: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 },
+      R: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 }
     };
     let activeKey = null;
     let isSyncRotation = true;
@@ -378,6 +378,10 @@
     let isPointerLooking = false;
     let lastPointerX = 0;
     let lastPointerY = 0;
+
+    function mod(n, m) {
+      return ((n % m) + m) % m;
+    }
 
     function getMeshRadius(mesh) {
       if (!mesh) return 0.3;
@@ -443,8 +447,8 @@
       mixer = null;
       animations = [];
       activeAction = null;
-      pathGroups.L = { nodes: [], progress: 0, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 };
-      pathGroups.R = { nodes: [], progress: 0, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 };
+      pathGroups.L = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 };
+      pathGroups.R = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 };
       lDriveWheel = null;
       rDriveWheel = null;
       lAssociatedWheels = [];
@@ -469,7 +473,6 @@
       document.getElementById('path-group').style.display = 'none';
     }
 
-    // 閉じた連続スプラインパス（CatmullRomCurve3）を構築して、全ピースを均等に沿わせる方式
     function setupPaths(model, gltfCameras = []) {
       model.updateMatrixWorld(true);
       const foundMap = {};
@@ -498,10 +501,14 @@
           rDriveWheel = { mesh: child, radius: getMeshRadius(child) };
         }
 
+        // APCメッシュ(グループ)の検出
         if (child.name === 'APC') apcMesh = child;
+
+        // 砲塔・砲身の検出
         if (child.name === '砲塔') turretMesh = child;
         if (child.name === '砲身') barrelMesh = child;
 
+        // 車長・射手カメラの検出
         if (child.name === '車長') {
           commanderCamera = findOrCreateCameraFromNode(child);
           commanderInitialQuat = commanderCamera.quaternion.clone();
@@ -522,12 +529,13 @@
         if (match) {
           const prefix = match[1];
           const num = parseInt(match[2], 10);
-          if (num >= 1 && num <= 39) {
+          if (num >= 1 && num <= 79) {
             foundMap[child.name] = child;
           }
         }
       });
 
+      // gltf.cameras 配列側にも念のためチェック
       if (Array.isArray(gltfCameras)) {
         gltfCameras.forEach((cam) => {
           if (!commanderCamera && (cam.name === '車長' || (cam.parent && cam.parent.name === '車長'))) {
@@ -542,25 +550,25 @@
       }
 
       ['L', 'R'].forEach((prefix) => {
-        const rawPoints = [];
-        const meshes = [];
-        for (let i = 1; i <= 39; i++) {
+        const nodes = [];
+        for (let i = 1; i <= 79; i++) {
           const mesh = foundMap[`${prefix}${i}`];
           if (mesh) {
-            meshes.push(mesh);
-            rawPoints.push(mesh.position.clone());
+            nodes.push({
+              name: `${prefix}${i}`,
+              mesh,
+              initialWorldPos: mesh.getWorldPosition(new THREE.Vector3()),
+              initialWorldQuat: mesh.getWorldQuaternion(new THREE.Quaternion()),
+              initialLocalPos: mesh.position.clone(),
+              initialLocalQuat: mesh.quaternion.clone()
+            });
           }
         }
-
-        let curve = null;
-        if (rawPoints.length >= 2) {
-          curve = new THREE.CatmullRomCurve3(rawPoints, true, 'centripetal', 0.1);
-        }
-
         pathGroups[prefix] = {
-          meshes,
-          curve,
-          progress: 0,
+          nodes,
+          stepOffset: 0,
+          segmentProgress: 0,
+          direction: 1,
           currentSpeed: 0,
           targetDirection: 1,
           wheelDir: 1,
@@ -568,13 +576,14 @@
         };
       });
 
-      if (pathGroups.L.meshes.length > 0 && pathGroups.R.meshes.length > 0) {
-        const dist = pathGroups.L.meshes[0].position.distanceTo(pathGroups.R.meshes[0].position);
+      // 左右の履帯幅を算出（旋回角速度計算用）
+      if (pathGroups.L.nodes.length > 0 && pathGroups.R.nodes.length > 0) {
+        const dist = pathGroups.L.nodes[0].mesh.position.distanceTo(pathGroups.R.nodes[0].mesh.position);
         if (dist > 0.01) trackSpanWidth = dist;
       }
 
-      const lCount = pathGroups.L.meshes.length;
-      const rCount = pathGroups.R.meshes.length;
+      const lCount = pathGroups.L.nodes.length;
+      const rCount = pathGroups.R.nodes.length;
       const pathGroupEl = document.getElementById('path-group');
 
       if (lCount >= 2 || rCount >= 2) {
@@ -591,10 +600,10 @@
       let lWheelDir = 1, rWheelDir = 1;
 
       if (key === 'w') {
-        lTargetDir = 1; rTargetDir = 1;
+        lTargetDir = -1; rTargetDir = -1;
         lWheelDir = 1; rWheelDir = 1;
       } else if (key === 's') {
-        lTargetDir = -1; rTargetDir = -1;
+        lTargetDir = 1; rTargetDir = 1;
         lWheelDir = -1; rWheelDir = -1;
       } else if (key === 'a') {
         lTargetDir = 1; rTargetDir = -1;
@@ -620,20 +629,44 @@
         document.getElementById('path-status').textContent = '停止中 (慣性待機)';
         return;
       }
-      document.getElementById('path-status').textContent = 'M3A3 履帯駆動・車体連動中';
+
+      const lGroup = pathGroups.L;
+      const rGroup = pathGroups.R;
+      const parts = [];
+
+      if (lGroup.nodes.length >= 2) {
+        const len = lGroup.nodes.length;
+        const nextL = lGroup.nodes[mod(lGroup.stepOffset + lGroup.direction, len)].name;
+        parts.push(`L(${lGroup.direction === 1 ? '1→2' : '1→79'}): L1→${nextL}`);
+      }
+      if (rGroup.nodes.length >= 2) {
+        const len = rGroup.nodes.length;
+        const nextR = rGroup.nodes[mod(rGroup.stepOffset + rGroup.direction, len)].name;
+        parts.push(`R(${rGroup.direction === 1 ? '1→2' : '1→79'}): R1→${nextR}`);
+      }
+      document.getElementById('path-status').textContent = parts.join(' / ');
     }
 
-    const _dummyPoint = new THREE.Vector3();
-    const _dummyTangent = new THREE.Vector3();
-    const _upVector = new THREE.Vector3(0, 1, 0);
-    const _rotMatrix = new THREE.Matrix4();
-    const _targetQuat = new THREE.Quaternion();
+    const _tempPos = new THREE.Vector3();
+    const _tempQuat = new THREE.Quaternion();
+    const _parentWorldQuat = new THREE.Quaternion();
+
+    function applyTransformFromSlot(item, slotA, slotB, t) {
+      const mesh = item.mesh;
+
+      _tempPos.lerpVectors(slotA.initialLocalPos, slotB.initialLocalPos, t);
+      mesh.position.copy(_tempPos);
+
+      if (isSyncRotation) {
+        _tempQuat.slerpQuaternions(slotA.initialLocalQuat, slotB.initialLocalQuat, t);
+        mesh.quaternion.copy(_tempQuat);
+      }
+    }
 
     function updateGroupMovement(group, delta) {
-      const meshes = group.meshes;
-      const count = meshes.length;
+      const count = group.nodes.length;
       group.linearDistanceMoved = 0;
-      if (count < 2 || !group.curve) return;
+      if (count < 2) return;
 
       const targetSpeed = activeKey ? pathSpeedMultiplier : 0;
       group.currentSpeed += (targetSpeed - group.currentSpeed) * Math.min(1.0, inertiaFactor * delta);
@@ -643,27 +676,48 @@
         return;
       }
 
-      const moveDelta = group.currentSpeed * delta * 0.08 * group.targetDirection;
-      group.progress = (group.progress + moveDelta) % 1.0;
-      if (group.progress < 0) group.progress += 1.0;
+      if (activeKey && group.direction !== group.targetDirection) {
+        group.stepOffset = mod(group.stepOffset + group.direction, count);
+        group.segmentProgress = group.segmentProgress > 0 ? (1 - group.segmentProgress) : 0;
+        group.direction = group.targetDirection;
+      }
 
-      const curveLength = group.curve.getLength();
-      group.linearDistanceMoved = Math.abs(moveDelta) * curveLength;
+      const dir = group.direction;
+      let remainingBudget = group.currentSpeed * delta;
+      let totalLinearDistance = 0;
 
-      // 39個の履帯ピースをスプライン上に等間隔に配置して途切れなく周回させる
-      for (let i = 0; i < count; i++) {
-        const u = (group.progress + (i / count)) % 1.0;
-        const mesh = meshes[i];
+      let safetyGuard = 0;
+      while (remainingBudget > 0 && safetyGuard < count) {
+        safetyGuard++;
+        const refFrom = group.nodes[mod(group.stepOffset, count)];
+        const refTo = group.nodes[mod(group.stepOffset + dir, count)];
+        const distance = refFrom.initialLocalPos.distanceTo(refTo.initialLocalPos);
+        const angleDiff = refFrom.initialLocalQuat.angleTo(refTo.initialLocalQuat);
 
-        group.curve.getPointAt(u, _dummyPoint);
-        mesh.position.copy(_dummyPoint);
+        const segmentLength = Math.max(distance, angleDiff * 0.5, 0.001);
+        const remainingInSegment = (1 - group.segmentProgress) * segmentLength;
 
-        if (isSyncRotation) {
-          group.curve.getTangentAt(u, _dummyTangent);
-          _rotMatrix.lookAt(_dummyPoint, _dummyPoint.clone().add(_dummyTangent), _upVector);
-          _targetQuat.setFromRotationMatrix(_rotMatrix);
-          mesh.quaternion.slerp(_targetQuat, 0.2);
+        if (remainingBudget >= remainingInSegment) {
+          const stepFraction = 1 - group.segmentProgress;
+          totalLinearDistance += distance * stepFraction;
+          remainingBudget -= remainingInSegment;
+          group.segmentProgress = 0;
+          group.stepOffset = mod(group.stepOffset + dir, count);
+        } else {
+          const stepFraction = remainingBudget / segmentLength;
+          totalLinearDistance += distance * stepFraction;
+          group.segmentProgress += stepFraction;
+          remainingBudget = 0;
         }
+      }
+
+      group.linearDistanceMoved = totalLinearDistance;
+
+      const t = group.segmentProgress;
+      for (let i = 0; i < count; i++) {
+        const fromSlot = group.nodes[mod(i + group.stepOffset, count)];
+        const toSlot = group.nodes[mod(i + group.stepOffset + dir, count)];
+        applyTransformFromSlot(group.nodes[i], fromSlot, toSlot, t);
       }
     }
 
@@ -671,8 +725,8 @@
       const lGroup = pathGroups.L;
       const rGroup = pathGroups.R;
 
-      const lDist = lGroup.linearDistanceMoved * lGroup.wheelDir * 12;
-      const rDist = rGroup.linearDistanceMoved * rGroup.wheelDir * 12;
+      const lDist = lGroup.linearDistanceMoved * lGroup.wheelDir;
+      const rDist = rGroup.linearDistanceMoved * rGroup.wheelDir;
 
       if (lDriveWheel) {
         lDriveWheel.mesh.rotation.x += lDist / lDriveWheel.radius;
@@ -696,8 +750,8 @@
       const lGroup = pathGroups.L;
       const rGroup = pathGroups.R;
 
-      const lSignedDist = lGroup.linearDistanceMoved * lGroup.wheelDir * 1.5;
-      const rSignedDist = rGroup.linearDistanceMoved * rGroup.wheelDir * 1.5;
+      const lSignedDist = lGroup.linearDistanceMoved * lGroup.wheelDir;
+      const rSignedDist = rGroup.linearDistanceMoved * rGroup.wheelDir;
 
       const forwardDelta = (lSignedDist + rSignedDist) * 0.5;
       const turnDelta = (rSignedDist - lSignedDist) / trackSpanWidth;
@@ -908,8 +962,8 @@
       isSyncRotation = e.target.checked;
       if (!isSyncRotation) {
         ['L', 'R'].forEach((prefix) => {
-          pathGroups[prefix].meshes.forEach((mesh) => {
-            mesh.quaternion.identity();
+          pathGroups[prefix].nodes.forEach((item) => {
+            item.mesh.quaternion.copy(item.initialLocalQuat);
           });
         });
       }
@@ -1005,7 +1059,7 @@
       dropOverlay.classList.add('active');
     });
     window.addEventListener('dragleave', (e) => {
-      if (e.relatedTarget === null) dropOverlay.classList.remove('Child');
+      if (e.relatedTarget === null) dropOverlay.classList.remove('active');
     });
     window.addEventListener('drop', (e) => {
       e.preventDefault();
