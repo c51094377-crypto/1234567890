@@ -478,7 +478,7 @@
       const foundMap = {};
 
       const lNames = ['L転輪1', 'L転輪2', 'L転輪3', 'L転輪4', 'L転輪5', 'L転輪6', 'L補助転輪', 'L補助輪'];
-      const rNames = ['R転輪1', 'R転輪2', 'R転輪3', 'R転輪4', 'R転輪5', 'R転輪6', 'R補助転輪', 'R補助輪'];
+      const rNames = ['R転輪1', 'R転輪2', 'R転輪3', 'R転輪4', 'R転輪5', 'R転輪6', 'R補助転輪', 'R補助輪', 'R駆動輪2', 'R駆動輪3', 'R駆動輪4', 'R駆動輪5', 'R駆動輪6'];
 
       const findOrCreateCameraFromNode = (node) => {
         if (node.isCamera) return node;
@@ -499,10 +499,6 @@
         }
         if (child.name === 'R駆動輪' && child.isMesh) {
           rDriveWheel = { mesh: child, radius: getMeshRadius(child) };
-        }
-        // R駆動輪のバリエーション名（もし存在する場合の対応）
-        if ((child.name === 'R駆動輪2' || child.name === 'R駆動輪3' || child.name === 'R駆動輪4' || child.name === 'R駆動輪5' || child.name === 'R駆動輪6') && child.isMesh) {
-          rAssociatedWheels.push({ mesh: child, radius: getMeshRadius(child) });
         }
 
         // APCメッシュ(グループ)の検出
@@ -601,7 +597,7 @@
       let lTargetDir = 1, rTargetDir = 1;
       let lWheelDir = 1, rWheelDir = 1;
 
-      // Wで前進（方向: 1）、Sで後退（方向: -1）に完全統一
+      // Wで前進（方向: 1）、Sで後退（方向: -1）に完全固定
       if (key === 'w') {
         lTargetDir = 1; rTargetDir = 1;
         lWheelDir = 1; rWheelDir = 1;
@@ -727,7 +723,7 @@
       const lGroup = pathGroups.L;
       const rGroup = pathGroups.R;
 
-      // 指定されたすべての車輪（L駆動輪、L転輪1〜6、L補助輪、L補助転輪、R駆動輪、R駆動輪2〜6、R転輪1〜6、R補助輪、R補助転輪）の回転速度を履帯の移動速度・量と完全に同期
+      // 駆動輪、転輪1〜6、補助輪、補助転輪などの回転速度を実際の履帯移動速度・量と完全に同期させる
       if (lDriveWheel) {
         const lRotDelta = (lGroup.linearDistanceMoved * lGroup.wheelDir) / lDriveWheel.radius;
         lDriveWheel.mesh.rotation.x += lRotDelta;
