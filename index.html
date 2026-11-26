@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Three.js GLB Viewer - APC M3A3 Control</title>
+  <title>Three.js GLB Viewer - Turret & Barrel Control</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -222,26 +222,26 @@
       </div>
 
       <div style="font-size: 11px; color: #a1a1aa; margin-top: 2px;">
-        W/S: ±Z移動 / A/D: ±Y旋回 / Q,E: 砲塔 / R,F: 砲身 / 1:車長 2:射手
+        WASDで慣性つき移動 / Q,Eで砲塔旋回 / R,Fで砲身昇降 / 1:車長 2:射手
       </div>
       <div class="wasd-grid">
         <div></div>
         <button class="wasd-btn" id="btn-w" data-key="w">
           <strong>W</strong>
-          <span>+Z移動</span>
+          <span>L/R: 1→79</span>
         </button>
         <div></div>
         <button class="wasd-btn" id="btn-a" data-key="a">
           <strong>A</strong>
-          <span>+Y旋回</span>
+          <span>L:+X / R:-X</span>
         </button>
         <button class="wasd-btn" id="btn-s" data-key="s">
           <strong>S</strong>
-          <span>-Z移動</span>
+          <span>L/R: 1→2</span>
         </button>
         <button class="wasd-btn" id="btn-d" data-key="d">
           <strong>D</strong>
-          <span>-Y旋回</span>
+          <span>L:-X / R:+X</span>
         </button>
       </div>
 
@@ -357,17 +357,16 @@
     let lAssociatedWheels = [];
     let rAssociatedWheels = [];
 
-    // 砲塔・砲身用変数（速度を今の半分に設定）
+    // 砲塔・砲身用変数（慣性速度追加）
     let turretMesh = null;
     let barrelMesh = null;
     let turretCurrentVel = 0;
     let barrelCurrentVel = 0;
     let keysPressed = {};
 
-    // APC M3A3 車体移動用変数
-    let apcGroup = null;
-    let vehicleMoveVel = 0;
-    let vehicleTurnVel = 0;
+    // 車体メッシュ（APC M3A3）用変数
+    let apcHullMesh = null;
+    let trackHalfWidth = 1.0;
 
     // ファイル内カメラ用変数（車長・射手）
     let commanderCamera = null;
@@ -458,9 +457,8 @@
       barrelMesh = null;
       turretCurrentVel = 0;
       barrelCurrentVel = 0;
-      apcGroup = null;
-      vehicleMoveVel = 0;
-      vehicleTurnVel = 0;
+      apcHullMesh = null;
+      trackHalfWidth = 1.0;
       commanderCamera = null;
       gunnerCamera = null;
       commanderInitialQuat = null;
@@ -496,15 +494,15 @@
       };
 
       model.traverse((child) => {
-        // APC M3A3 グループの検出
-        if (child.name === 'APC M3A3') apcGroup = child;
-
         if (child.name === 'L駆動輪' && child.isMesh) {
           lDriveWheel = { mesh: child, radius: getMeshRadius(child) };
         }
         if (child.name === 'R駆動輪' && child.isMesh) {
           rDriveWheel = { mesh: child, radius: getMeshRadius(child) };
         }
+
+        // APC M3A3 車体グループの検出
+        if (child.name === 'APC M3A3') apcHullMesh = child;
 
         // 砲塔・砲身の検出
         if (child.name === '砲塔') turretMesh = child;
@@ -539,6 +537,7 @@
         }
       });
 
+      // gltf.cameras 配列側にも念のためチェック
       if (Array.isArray(gltfCameras)) {
         gltfCameras.forEach((cam) => {
           if (!commanderCamera && (cam.name === '車長' || (cam.parent && cam.parent.name === '車長'))) {
@@ -582,6 +581,14 @@
           linearDistanceMoved: 0
         };
       });
+
+      // 左右履帯間の距離から旋回半径を計算
+      if (pathGroups.L.nodes.length > 0 && pathGroups.R.nodes.length > 0) {
+        const dist = pathGroups.L.nodes[0].baseWorldPos.distanceTo(pathGroups.R.nodes[0].baseWorldPos);
+        if (dist > 0.01) {
+          trackHalfWidth = dist * 0.5;
+        }
+      }
 
       const lCount = pathGroups.L.nodes.length;
       const rCount = pathGroups.R.nodes.length;
@@ -733,6 +740,7 @@
       const lGroup = pathGroups.L;
       const rGroup = pathGroups.R;
 
+      // 履帯が実際に移動した3D空間上の距離(linearDistanceMoved)と車輪半径から回転角(ラジアン)を厳密一致させる (Δθ = Δs / r)
       const lDist = lGroup.linearDistanceMoved * lGroup.wheelDir;
       const rDist = rGroup.linearDistanceMoved * rGroup.wheelDir;
 
@@ -751,41 +759,36 @@
       }
     }
 
-    // APC M3A3 の移動・旋回処理（W: +Z, S: -Z / A: +Y, D: -Y）
-    function updateAPCM3A3Movement(delta) {
-      if (!apcGroup) return;
+    // 履帯の移動速度に合わせて APC M3A3 メッシュ(グループ)を移動・旋回させる
+    function updateHullMovement() {
+      if (!apcHullMesh) return;
 
-      const moveMaxSpeed = pathSpeedMultiplier * 0.5;
-      const turnMaxSpeed = 1.5;
-      const damping = Math.min(1.0, inertiaFactor * delta);
+      const lGroup = pathGroups.L;
+      const rGroup = pathGroups.R;
 
-      let targetMoveVel = 0;
-      let targetTurnVel = 0;
+      // Wで+Z、Sで-Z方向となるよう各履帯の前後進距離を算出 (wheelDir: W=+1, S=-1, A:L=-1/R=+1, D:L=+1/R=-1)
+      const dL = lGroup.linearDistanceMoved * lGroup.wheelDir;
+      const dR = rGroup.linearDistanceMoved * rGroup.wheelDir;
 
-      if (keysPressed['w']) targetMoveVel += moveMaxSpeed;
-      if (keysPressed['s']) targetMoveVel -= moveMaxSpeed;
-      if (keysPressed['a']) targetTurnVel += turnMaxSpeed;
-      if (keysPressed['d']) targetTurnVel -= turnMaxSpeed;
+      if (Math.abs(dL) < 1e-7 && Math.abs(dR) < 1e-7) return;
 
-      vehicleMoveVel += (targetMoveVel - vehicleMoveVel) * damping;
-      vehicleTurnVel += (targetTurnVel - vehicleTurnVel) * damping;
+      // 差動駆動モデル: 並進移動量とY軸旋回角度
+      const forwardMove = (dL + dR) * 0.5;
+      const yawChange = (dR - dL) / (2 * trackHalfWidth);
 
-      if (Math.abs(vehicleTurnVel) > 0.0001) {
-        apcGroup.rotation.y += vehicleTurnVel * delta;
-      }
+      // Aで+Y方向、Dで-Y方向に旋回
+      apcHullMesh.rotation.y += yawChange;
 
-      if (Math.abs(vehicleMoveVel) > 0.0001) {
-        // ローカルの +Z 方向に移動
-        const moveDir = new THREE.Vector3(0, 0, 1).applyQuaternion(apcGroup.quaternion);
-        apcGroup.position.addScaledVector(moveDir, vehicleMoveVel * delta);
-      }
+      // Wで+Z方向、Sで-Z方向（ローカルZ軸基準で移動）
+      apcHullMesh.translateZ(forwardMove);
     }
 
-    // 砲塔・砲身の回転・昇降処理（速度を今の半分に設定）
+    // 砲塔・砲身の回転・昇降処理（速度を半分に変更）
     function updateTurretAndBarrel(delta) {
-      const maxRotSpeed = 0.9; // 1.8の半分
+      const maxRotSpeed = 0.9;
       const damping = Math.min(1.0, inertiaFactor * delta);
 
+      // 砲塔旋回 (Q: +Y, E: -Y)
       if (turretMesh) {
         let targetTurretVel = 0;
         if (keysPressed['q']) targetTurretVel += maxRotSpeed;
@@ -799,6 +802,7 @@
         }
       }
 
+      // 砲身昇降 (R: -Y方向 / 俯仰角, F: +Y方向)
       if (barrelMesh) {
         let targetBarrelVel = 0;
         if (keysPressed['r']) targetBarrelVel -= maxRotSpeed;
@@ -808,6 +812,7 @@
         if (Math.abs(barrelCurrentVel) > 0.0001) {
           barrelMesh.rotation.x += barrelCurrentVel * delta;
 
+          // 角度制限: Y-60~10°
           const minRad = THREE.MathUtils.degToRad(-60);
           const maxRad = THREE.MathUtils.degToRad(10);
           if (barrelMesh.rotation.x < minRad) {
@@ -827,8 +832,8 @@
       updateGroupMovement(pathGroups.L, delta);
       updateGroupMovement(pathGroups.R, delta);
 
+      updateHullMovement();
       updateDriveWheelsRotation();
-      updateAPCM3A3Movement(delta);
       updateTurretAndBarrel(delta);
 
       if (Math.random() < 0.1) updatePathStatusText();
@@ -930,6 +935,7 @@
       });
     }
 
+    // 車長・射手視点での首振り操作（マウス＆タッチ指操作対応）
     const domElem = renderer.domElement;
     domElem.addEventListener('pointerdown', (e) => {
       if (activeCamera === commanderCamera || activeCamera === gunnerCamera) {
@@ -1002,7 +1008,7 @@
         return;
       }
       if (['w', 'a', 's', 'd'].includes(key)) {
-        keysPressed[key] = true;
+        setKeyDirections(key);
       }
       if (['q', 'e', 'r', 'f'].includes(key)) {
         keysPressed[key] = true;
@@ -1011,8 +1017,9 @@
 
     window.addEventListener('keyup', (e) => {
       const key = e.key.toLowerCase();
-      if (['w', 'a', 's', 'd'].includes(key)) {
-        keysPressed[key] = false;
+      if (key === activeKey) {
+        activeKey = null;
+        document.querySelectorAll('.wasd-btn').forEach((btn) => btn.classList.remove('active'));
       }
       if (['q', 'e', 'r', 'f'].includes(key)) {
         keysPressed[key] = false;
@@ -1021,9 +1028,13 @@
 
     document.querySelectorAll('.wasd-btn').forEach((btn) => {
       const key = btn.dataset.key;
-      btn.addEventListener('mousedown', () => { keysPressed[key] = true; });
-      btn.addEventListener('mouseup', () => { keysPressed[key] = false; });
-      btn.addEventListener('mouseleave', () => { keysPressed[key] = false; });
+      btn.addEventListener('mousedown', () => setKeyDirections(key));
+      btn.addEventListener('mouseup', () => {
+        if (activeKey === key) {
+          activeKey = null;
+          btn.classList.remove('active');
+        }
+      });
     });
 
     document.getElementById('wireframe-toggle').addEventListener('change', (e) => {
