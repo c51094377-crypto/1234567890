@@ -727,8 +727,8 @@
 
       if (lDriveWheel) {
         lDriveWheel.mesh.rotation.x += lDist / lDriveWheel.radius;
-        const actualLDist = lDriveWheel.mesh.rotation.x * lDriveWheel.radius * lGroup.wheelDir;
-        lGroup.linearDistanceMoved = Math.abs(actualLDist);
+        const wheelRotDelta = lDist / lDriveWheel.radius;
+        lGroup.linearDistanceMoved = Math.abs(wheelRotDelta * lDriveWheel.radius);
       }
       for (const wheel of lAssociatedWheels) {
         wheel.mesh.rotation.x += lDist / wheel.radius;
@@ -736,8 +736,8 @@
 
       if (rDriveWheel) {
         rDriveWheel.mesh.rotation.x += rDist / rDriveWheel.radius;
-        const actualRDist = rDriveWheel.mesh.rotation.x * rDriveWheel.radius * rGroup.wheelDir;
-        rGroup.linearDistanceMoved = Math.abs(actualRDist);
+        const wheelRotDelta = rDist / rDriveWheel.radius;
+        rGroup.linearDistanceMoved = Math.abs(wheelRotDelta * rDriveWheel.radius);
       }
       for (const wheel of rAssociatedWheels) {
         wheel.mesh.rotation.x += rDist / wheel.radius;
@@ -811,9 +811,9 @@
     }
 
     function updateAllPathsMovement(delta) {
+      updateDriveWheelsRotation();
       updateGroupMovement(pathGroups.L, delta);
       updateGroupMovement(pathGroups.R, delta);
-      updateDriveWheelsRotation();
       updateApcMovement();
       updateTurretAndBarrel(delta);
 
