@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Three.js GLB Viewer - Gravity & Wheels Collision</title>
+  <title>Three.js GLB Viewer - Track & Sprocket Drive</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -226,26 +226,26 @@
       </div>
 
       <div style="font-size: 11px; color: #a1a1aa; margin-top: 2px;">
-        WASDで慣性つき移動
+        WASDで駆動輪連動移動
       </div>
       <div class="wasd-grid">
         <div></div>
         <button class="wasd-btn" id="btn-w" data-key="w">
           <strong>W</strong>
-          <span>L/R: 1→79</span>
+          <span>L/R: 前進</span>
         </button>
         <div></div>
         <button class="wasd-btn" id="btn-a" data-key="a">
           <strong>A</strong>
-          <span>L:1→2 / R:1→79</span>
+          <span>L:後退 / R:前進</span>
         </button>
         <button class="wasd-btn" id="btn-s" data-key="s">
           <strong>S</strong>
-          <span>L/R: 1→2</span>
+          <span>L/R: 後退</span>
         </button>
         <button class="wasd-btn" id="btn-d" data-key="d">
           <strong>D</strong>
-          <span>L:1→79 / R:1→2</span>
+          <span>L:前進 / R:後退</span>
         </button>
       </div>
 
@@ -300,7 +300,6 @@
     import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
-    // 基本セットアップ
     const container = document.getElementById('canvas-container');
     const scene = new THREE.Scene();
     scene.background = new THREE.Color('#18181b');
@@ -347,8 +346,8 @@
     const clock = new THREE.Clock();
 
     let pathGroups = {
-      L: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1 },
-      R: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1 }
+      L: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, sprocketMesh: null, initialSprocketRotX: 0 },
+      R: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, sprocketMesh: null, initialSprocketRotX: 0 }
     };
     let activeKey = null;
     let isSyncRotation = true;
@@ -356,7 +355,6 @@
     let inertiaFactor = 4.0;
     let isGravityEnabled = true;
 
-    // 当たり判定対象のホイールメッシュリスト
     const lWheelNames = ['L補助転輪', 'L駆動輪', 'L転輪1', 'L転輪2', 'L転輪3', 'L転輪4', 'L転輪5', 'L転輪6', 'L補助輪'];
     const rWheelNames = ['R補助転輪', 'R駆動輪', 'R転輪1', 'R転輪2', 'R転輪3', 'R転輪4', 'R転輪5', 'R転輪6'];
     let collisionMeshes = [];
@@ -382,8 +380,8 @@
       mixer = null;
       animations = [];
       activeAction = null;
-      pathGroups.L = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1 };
-      pathGroups.R = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1 };
+      pathGroups.L = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, sprocketMesh: null, initialSprocketRotX: 0 };
+      pathGroups.R = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, sprocketMesh: null, initialSprocketRotX: 0 };
       collisionMeshes = [];
       activeKey = null;
       document.getElementById('anim-group').style.display = 'none';
@@ -395,9 +393,18 @@
       const foundMap = {};
 
       model.traverse((child) => {
-        // 当たり判定メッシュの収集
         if (lWheelNames.includes(child.name) || rWheelNames.includes(child.name)) {
           if (child.isMesh) collisionMeshes.push(child);
+        }
+
+        // 駆動輪の検出
+        if (child.name === 'L駆動輪') {
+          pathGroups.L.sprocketMesh = child;
+          pathGroups.L.initialSprocketRotX = child.rotation.x;
+        }
+        if (child.name === 'R駆動輪') {
+          pathGroups.R.sprocketMesh = child;
+          pathGroups.R.initialSprocketRotX = child.rotation.x;
         }
 
         const match = child.name.match(/^([LR])([1-9][0-9]?)$/);
@@ -431,14 +438,7 @@
             });
           }
         }
-        pathGroups[prefix] = {
-          nodes,
-          stepOffset: 0,
-          segmentProgress: 0,
-          direction: 1,
-          currentSpeed: 0,
-          targetDirection: 1
-        };
+        pathGroups[prefix].nodes = nodes;
       });
 
       const lCount = pathGroups.L.nodes.length;
@@ -480,12 +480,12 @@
       if (lGroup.nodes.length >= 2) {
         const len = lGroup.nodes.length;
         const nextL = lGroup.nodes[mod(lGroup.stepOffset + lGroup.direction, len)].name;
-        parts.push(`L(${lGroup.direction === 1 ? '1→2' : '1→79'}): L1→${nextL}`);
+        parts.push(`L: L1→${nextL}`);
       }
       if (rGroup.nodes.length >= 2) {
         const len = rGroup.nodes.length;
         const nextR = rGroup.nodes[mod(rGroup.stepOffset + rGroup.direction, len)].name;
-        parts.push(`R(${rGroup.direction === 1 ? '1→2' : '1→79'}): R1→${nextR}`);
+        parts.push(`R: R1→${nextR}`);
       }
       document.getElementById('path-status').textContent = parts.join(' / ');
     }
@@ -519,6 +519,12 @@
 
       const targetSpeed = activeKey ? pathSpeedMultiplier : 0;
       group.currentSpeed += (targetSpeed - group.currentSpeed) * Math.min(1.0, inertiaFactor * delta);
+
+      // X方向の回転（駆動輪が履帯をかみ合わせて回す挙動）を駆動輪に反映
+      if (group.sprocketMesh) {
+        const rotAmount = (group.currentSpeed * delta * group.direction) * 2.5;
+        group.sprocketMesh.rotation.x += rotAmount;
+      }
 
       if (group.currentSpeed < 0.001) {
         group.currentSpeed = 0;
@@ -563,7 +569,6 @@
       }
     }
 
-    // 重力と車輪の当たり判定処理（モデル全体をY軸方向に沈み込ませる）
     const raycaster = new THREE.Raycaster();
     const downVector = new THREE.Vector3(0, -1, 0);
 
@@ -575,17 +580,14 @@
       let highestGroundY = -Infinity;
       let lowestWheelLocalY = Infinity;
 
-      // 指定された車輪メッシュから下方向へレイキャスト、または位置を検出
       for (const wheelMesh of collisionMeshes) {
         const wheelWorldPos = new THREE.Vector3();
         wheelMesh.getWorldPosition(wheelWorldPos);
 
         raycaster.set(wheelWorldPos, downVector);
-        // シーン内の他のオブジェクト（床や他のメッシュ）との交差判定
         const intersects = raycaster.intersectObjects(scene.children, true);
 
         for (const hit of intersects) {
-          // 自分自身やその子孫は除外
           let isSelf = false;
           currentModel.traverse((child) => { if (child === hit.object) isSelf = true; });
           if (!isSelf) {
@@ -595,7 +597,6 @@
           }
         }
 
-        // 最も低い車輪のローカルY位置を特定
         const localPos = wheelMesh.position.clone();
         wheelMesh.localToWorld(localPos);
         if (localPos.y < lowestWheelLocalY) {
@@ -603,10 +604,8 @@
         }
       }
 
-      // 床が見つかった場合、車輪の底面が床に接地するようモデル全体の位置を調整
       if (highestGroundY !== -Infinity && lowestWheelLocalY !== Infinity) {
         const targetModelY = currentModel.position.y + (highestGroundY - lowestWheelLocalY);
-        // 重力による滑らかな追従 (Lerp)
         currentModel.position.y = THREE.MathUtils.lerp(currentModel.position.y, targetModelY, 0.2);
       }
     }
@@ -614,10 +613,7 @@
     function updateAllPathsMovement(delta) {
       updateGroupMovement(pathGroups.L, delta);
       updateGroupMovement(pathGroups.R, delta);
-
-      // パス移動後に重力・当たり判定を適用
       applyGravityAndCollision();
-
       if (Math.random() < 0.1) updatePathStatusText();
     }
 
