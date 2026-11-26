@@ -448,25 +448,21 @@
 
     function setKeyDirections(key) {
       activeKey = key;
-      // W: L,Rともに 1→79 (-1), 駆動輪は両方 -X方向
-      // S: L,Rともに 1→2 (1), 駆動輪は両方 +X方向
-      // A: Lは 1→2 (1) [駆動輪+X], Rは 1→79 (-1) [駆動輪-X]
-      // D: Lは 1→79 (-1) [駆動輪-X], Rは 1→2 (1) [駆動輪+X]
       let lTargetDir = 1, rTargetDir = 1;
       let lWheelDir = 1, rWheelDir = 1;
 
       if (key === 'w') {
         lTargetDir = -1; rTargetDir = -1;
-        lWheelDir = -1; rWheelDir = -1; // -X方向
+        lWheelDir = 1; rWheelDir = 1;   // 符号反転
       } else if (key === 's') {
         lTargetDir = 1; rTargetDir = 1;
-        lWheelDir = 1; rWheelDir = 1;   // +X方向
+        lWheelDir = -1; rWheelDir = -1; // 符号反転
       } else if (key === 'a') {
         lTargetDir = 1; rTargetDir = -1;
-        lWheelDir = 1; rWheelDir = -1;   // L:+X, R:-X
+        lWheelDir = -1; rWheelDir = 1;  // 符号反転
       } else if (key === 'd') {
         lTargetDir = -1; rTargetDir = 1;
-        lWheelDir = -1; rWheelDir = 1;   // L:-X, R:+X
+        lWheelDir = 1; rWheelDir = -1;  // 符号反転
       }
 
       pathGroups.L.targetDirection = lTargetDir;
@@ -580,13 +576,11 @@
       const lGroup = pathGroups.L;
       const rGroup = pathGroups.R;
 
-      // L駆動輪の回転（+X方向 または -X方向）
       if (lDriveWheel) {
         const lSpeed = lGroup.currentSpeed * lGroup.wheelDir;
         lDriveWheel.rotation.x += lSpeed * delta * 5;
       }
 
-      // R駆動輪の回転（+X方向 または -X方向）
       if (rDriveWheel) {
         const rSpeed = rGroup.currentSpeed * rGroup.wheelDir;
         rDriveWheel.rotation.x += rSpeed * delta * 5;
