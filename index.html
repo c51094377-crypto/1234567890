@@ -343,8 +343,8 @@
     const clock = new THREE.Clock();
 
     let pathGroups = {
-      L: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1 },
-      R: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1 }
+      L: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 },
+      R: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 }
     };
     let activeKey = null;
     let isSyncRotation = true;
@@ -356,13 +356,23 @@
     let lAssociatedWheels = [];
     let rAssociatedWheels = [];
 
-    // 砲塔・砲身用変数
+    // 砲塔・砲身用変数（慣性速度追加）
     let turretMesh = null;
     let barrelMesh = null;
+    let turretCurrentVel = 0;
+    let barrelCurrentVel = 0;
     let keysPressed = {};
 
     function mod(n, m) {
       return ((n % m) + m) % m;
+    }
+
+    function getMeshRadius(mesh) {
+      if (!mesh) return 0.3;
+      const box = new THREE.Box3().setFromObject(mesh);
+      const size = box.getSize(new THREE.Vector3());
+      const radius = Math.max(size.y, size.z) * 0.5;
+      return radius > 0.001 ? radius : 0.3;
     }
 
     function clearCurrentModel() {
@@ -382,14 +392,16 @@
       mixer = null;
       animations = [];
       activeAction = null;
-      pathGroups.L = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1 };
-      pathGroups.R = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1 };
+      pathGroups.L = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 };
+      pathGroups.R = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 };
       lDriveWheel = null;
       rDriveWheel = null;
       lAssociatedWheels = [];
       rAssociatedWheels = [];
       turretMesh = null;
       barrelMesh = null;
+      turretCurrentVel = 0;
+      barrelCurrentVel = 0;
       activeKey = null;
       keysPressed = {};
       document.getElementById('anim-group').style.display = 'none';
@@ -404,15 +416,23 @@
       const rNames = ['R転輪1', 'R転輪2', 'R転輪3', 'R転輪4', 'R転輪5', 'R転輪6', 'R補助転輪', 'R補助輪'];
 
       model.traverse((child) => {
-        if (child.name === 'L駆動輪' && child.isMesh) lDriveWheel = child;
-        if (child.name === 'R駆動輪' && child.isMesh) rDriveWheel = child;
+        if (child.name === 'L駆動輪' && child.isMesh) {
+          lDriveWheel = { mesh: child, radius: getMeshRadius(child) };
+        }
+        if (child.name === 'R駆動輪' && child.isMesh) {
+          rDriveWheel = { mesh: child, radius: getMeshRadius(child) };
+        }
 
         // 砲塔・砲身の検出
         if (child.name === '砲塔') turretMesh = child;
         if (child.name === '砲身') barrelMesh = child;
 
-        if (lNames.includes(child.name) && child.isMesh) lAssociatedWheels.push(child);
-        if (rNames.includes(child.name) && child.isMesh) rAssociatedWheels.push(child);
+        if (lNames.includes(child.name) && child.isMesh) {
+          lAssociatedWheels.push({ mesh: child, radius: getMeshRadius(child) });
+        }
+        if (rNames.includes(child.name) && child.isMesh) {
+          rAssociatedWheels.push({ mesh: child, radius: getMeshRadius(child) });
+        }
 
         const match = child.name.match(/^([LR])([1-9][0-9]?)$/);
         if (match) {
@@ -452,7 +472,8 @@
           direction: 1,
           currentSpeed: 0,
           targetDirection: 1,
-          wheelDir: 1
+          wheelDir: 1,
+          linearDistanceMoved: 0
         };
       });
 
@@ -546,6 +567,7 @@
 
     function updateGroupMovement(group, delta) {
       const count = group.nodes.length;
+      group.linearDistanceMoved = 0;
       if (count < 2) return;
 
       const targetSpeed = activeKey ? pathSpeedMultiplier : 0;
@@ -564,6 +586,7 @@
 
       const dir = group.direction;
       let remainingBudget = group.currentSpeed * delta;
+      let totalLinearDistance = 0;
 
       let safetyGuard = 0;
       while (remainingBudget > 0 && safetyGuard < count) {
@@ -577,14 +600,20 @@
         const remainingInSegment = (1 - group.segmentProgress) * segmentLength;
 
         if (remainingBudget >= remainingInSegment) {
+          const stepFraction = 1 - group.segmentProgress;
+          totalLinearDistance += distance * stepFraction;
           remainingBudget -= remainingInSegment;
           group.segmentProgress = 0;
           group.stepOffset = mod(group.stepOffset + dir, count);
         } else {
-          group.segmentProgress += remainingBudget / segmentLength;
+          const stepFraction = remainingBudget / segmentLength;
+          totalLinearDistance += distance * stepFraction;
+          group.segmentProgress += stepFraction;
           remainingBudget = 0;
         }
       }
+
+      group.linearDistanceMoved = totalLinearDistance;
 
       const t = group.segmentProgress;
       for (let i = 0; i < count; i++) {
@@ -594,54 +623,71 @@
       }
     }
 
-    function updateDriveWheelsRotation(delta) {
+    function updateDriveWheelsRotation() {
       const lGroup = pathGroups.L;
       const rGroup = pathGroups.R;
 
-      const lSpeed = lGroup.currentSpeed * lGroup.wheelDir;
-      const rSpeed = rGroup.currentSpeed * rGroup.wheelDir;
+      // 履帯が実際に移動した3D空間上の距離(linearDistanceMoved)と車輪半径から回転角(ラジアン)を厳密一致させる (Δθ = Δs / r)
+      const lDist = lGroup.linearDistanceMoved * lGroup.wheelDir;
+      const rDist = rGroup.linearDistanceMoved * rGroup.wheelDir;
 
       if (lDriveWheel) {
-        lDriveWheel.rotation.x += lSpeed * delta * 5;
+        lDriveWheel.mesh.rotation.x += lDist / lDriveWheel.radius;
       }
       for (const wheel of lAssociatedWheels) {
-        wheel.rotation.x += lSpeed * delta * 5;
+        wheel.mesh.rotation.x += lDist / wheel.radius;
       }
 
       if (rDriveWheel) {
-        rDriveWheel.rotation.x += rSpeed * delta * 5;
+        rDriveWheel.mesh.rotation.x += rDist / rDriveWheel.radius;
       }
       for (const wheel of rAssociatedWheels) {
-        wheel.rotation.x += rSpeed * delta * 5;
+        wheel.mesh.rotation.x += rDist / wheel.radius;
       }
     }
 
-    // 砲塔・砲身の回転・昇降処理
+    // 砲塔・砲身の回転・昇降処理（慣性追加）
     function updateTurretAndBarrel(delta) {
-      const rotSpeed = 2.0 * delta;
+      const maxRotSpeed = 1.8;
+      const damping = Math.min(1.0, inertiaFactor * delta);
 
       // 砲塔旋回 (Q: +Y, E: -Y)
       if (turretMesh) {
-        if (keysPressed['q']) {
-          turretMesh.rotation.y += rotSpeed;
-        }
-        if (keysPressed['e']) {
-          turretMesh.rotation.y -= rotSpeed;
+        let targetTurretVel = 0;
+        if (keysPressed['q']) targetTurretVel += maxRotSpeed;
+        if (keysPressed['e']) targetTurretVel -= maxRotSpeed;
+
+        turretCurrentVel += (targetTurretVel - turretCurrentVel) * damping;
+        if (Math.abs(turretCurrentVel) > 0.0001) {
+          turretMesh.rotation.y += turretCurrentVel * delta;
+        } else {
+          turretCurrentVel = 0;
         }
       }
 
-      // 砲身昇降 (-Y ~ 10° ≒ -60° ~ +10° -> ラジアンに変換: -1.047 ~ 0.1745)
+      // 砲身昇降 (R: -Y方向 / 俯仰角, F: +Y方向)
       if (barrelMesh) {
-        if (keysPressed['r']) {
-          barrelMesh.rotation.x -= rotSpeed;
+        let targetBarrelVel = 0;
+        if (keysPressed['r']) targetBarrelVel -= maxRotSpeed;
+        if (keysPressed['f']) targetBarrelVel += maxRotSpeed;
+
+        barrelCurrentVel += (targetBarrelVel - barrelCurrentVel) * damping;
+        if (Math.abs(barrelCurrentVel) > 0.0001) {
+          barrelMesh.rotation.x += barrelCurrentVel * delta;
+
+          // 角度制限: Y-60~10°
+          const minRad = THREE.MathUtils.degToRad(-60);
+          const maxRad = THREE.MathUtils.degToRad(10);
+          if (barrelMesh.rotation.x < minRad) {
+            barrelMesh.rotation.x = minRad;
+            barrelCurrentVel = 0;
+          } else if (barrelMesh.rotation.x > maxRad) {
+            barrelMesh.rotation.x = maxRad;
+            barrelCurrentVel = 0;
+          }
+        } else {
+          barrelCurrentVel = 0;
         }
-        if (keysPressed['f']) {
-          barrelMesh.rotation.x += rotSpeed;
-        }
-        // 角度制限: Y-60~10° (-60度 = -1.04719rad, +10度 = 0.174533rad)
-        const minRad = THREE.MathUtils.degToRad(-60);
-        const maxRad = THREE.MathUtils.degToRad(10);
-        barrelMesh.rotation.x = Math.max(minRad, Math.min(maxRad, barrelMesh.rotation.x));
       }
     }
 
@@ -649,7 +695,7 @@
       updateGroupMovement(pathGroups.L, delta);
       updateGroupMovement(pathGroups.R, delta);
 
-      updateDriveWheelsRotation(delta);
+      updateDriveWheelsRotation();
       updateTurretAndBarrel(delta);
 
       if (Math.random() < 0.1) updatePathStatusText();
