@@ -554,16 +554,10 @@
         for (let i = 1; i <= 39; i++) {
           const mesh = foundMap[`${prefix}${i}`];
           if (mesh) {
-            const baseWorldPos = new THREE.Vector3();
-            const baseWorldQuat = new THREE.Quaternion();
-            mesh.getWorldPosition(baseWorldPos);
-            mesh.getWorldQuaternion(baseWorldQuat);
-
             nodes.push({
               name: `${prefix}${i}`,
               mesh,
-              baseWorldPos,
-              baseWorldQuat,
+              initialLocalPos: mesh.position.clone(),
               initialLocalQuat: mesh.quaternion.clone()
             });
           }
@@ -580,9 +574,9 @@
         };
       });
 
-      // 左右の履帯幅を算出（旋回角速度計算用）
+      // 左右の履帯幅を算出（ APC空間でのローカル初期位置ベース）
       if (pathGroups.L.nodes.length > 0 && pathGroups.R.nodes.length > 0) {
-        const dist = pathGroups.L.nodes[0].baseWorldPos.distanceTo(pathGroups.R.nodes[0].baseWorldPos);
+        const dist = pathGroups.L.nodes[0].mesh.position.distanceTo(pathGroups.R.nodes[0].mesh.position);
         if (dist > 0.01) trackSpanWidth = dist;
       }
 
@@ -651,29 +645,6 @@
       document.getElementById('path-status').textContent = parts.join(' / ');
     }
 
-    const _tempPos = new THREE.Vector3();
-    const _tempQuat = new THREE.Quaternion();
-    const _parentWorldQuat = new THREE.Quaternion();
-
-    function applyTransformFromSlot(item, slotA, slotB, t) {
-      const mesh = item.mesh;
-
-      _tempPos.lerpVectors(slotA.baseWorldPos, slotB.baseWorldPos, t);
-      if (mesh.parent) {
-        mesh.parent.worldToLocal(_tempPos);
-      }
-      mesh.position.copy(_tempPos);
-
-      if (isSyncRotation) {
-        _tempQuat.slerpQuaternions(slotA.baseWorldQuat, slotB.baseWorldQuat, t);
-        if (mesh.parent) {
-          mesh.parent.getWorldQuaternion(_parentWorldQuat);
-          _tempQuat.premultiply(_parentWorldQuat.invert());
-        }
-        mesh.quaternion.copy(_tempQuat);
-      }
-    }
-
     function updateGroupMovement(group, delta) {
       const count = group.nodes.length;
       group.linearDistanceMoved = 0;
@@ -694,41 +665,42 @@
       }
 
       const dir = group.direction;
-      let remainingBudget = group.currentSpeed * delta;
+      let remainingBudget = group.currentSpeed * delta * 0.15; // 周回スケール調整
       let totalLinearDistance = 0;
 
       let safetyGuard = 0;
       while (remainingBudget > 0 && safetyGuard < count) {
         safetyGuard++;
-        const refFrom = group.nodes[mod(group.stepOffset, count)];
-        const refTo = group.nodes[mod(group.stepOffset + dir, count)];
-        const distance = refFrom.baseWorldPos.distanceTo(refTo.baseWorldPos);
-        const angleDiff = refFrom.baseWorldQuat.angleTo(refTo.baseWorldQuat);
-
-        const segmentLength = Math.max(distance, angleDiff * 0.5, 0.001);
+        const slotA = group.nodes[mod(group.stepOffset, count)];
+        const slotB = group.nodes[mod(group.stepOffset + dir, count)];
+        const segmentLength = slotA.initialLocalPos.distanceTo(slotB.initialLocalPos) || 0.05;
         const remainingInSegment = (1 - group.segmentProgress) * segmentLength;
 
         if (remainingBudget >= remainingInSegment) {
-          const stepFraction = 1 - group.segmentProgress;
-          totalLinearDistance += distance * stepFraction;
+          totalLinearDistance += segmentLength * (1 - group.segmentProgress);
           remainingBudget -= remainingInSegment;
           group.segmentProgress = 0;
           group.stepOffset = mod(group.stepOffset + dir, count);
         } else {
-          const stepFraction = remainingBudget / segmentLength;
-          totalLinearDistance += distance * stepFraction;
-          group.segmentProgress += stepFraction;
+          totalLinearDistance += remainingBudget;
+          group.segmentProgress += remainingBudget / segmentLength;
           remainingBudget = 0;
         }
       }
 
       group.linearDistanceMoved = totalLinearDistance;
 
+      // 各履帯ピースをAPCローカル座標系内でループ循環移動させる
       const t = group.segmentProgress;
       for (let i = 0; i < count; i++) {
-        const fromSlot = group.nodes[mod(i + group.stepOffset, count)];
-        const toSlot = group.nodes[mod(i + group.stepOffset + dir, count)];
-        applyTransformFromSlot(group.nodes[i], fromSlot, toSlot, t);
+        const item = group.nodes[i];
+        const slotA = group.nodes[mod(i + group.stepOffset, count)];
+        const slotB = group.nodes[mod(i + group.stepOffset + dir, count)];
+
+        item.mesh.position.lerpVectors(slotA.initialLocalPos, slotB.initialLocalPos, t);
+        if (isSyncRotation) {
+          item.mesh.quaternion.slerpQuaternions(slotA.initialLocalQuat, slotB.initialLocalQuat, t);
+        }
       }
     }
 
@@ -736,9 +708,8 @@
       const lGroup = pathGroups.L;
       const rGroup = pathGroups.R;
 
-      // 履帯が実際に移動した3D空間上の距離(linearDistanceMoved)と車輪半径から回転角(ラジアン)を厳密一致させる (Δθ = Δs / r)
-      const lDist = lGroup.linearDistanceMoved * lGroup.wheelDir;
-      const rDist = rGroup.linearDistanceMoved * rGroup.wheelDir;
+      const lDist = lGroup.linearDistanceMoved * lGroup.wheelDir * 10;
+      const rDist = rGroup.linearDistanceMoved * rGroup.wheelDir * 10;
 
       if (lDriveWheel) {
         lDriveWheel.mesh.rotation.x += lDist / lDriveWheel.radius;
@@ -762,11 +733,8 @@
       const lGroup = pathGroups.L;
       const rGroup = pathGroups.R;
 
-      // W: wheelDir = +1 (前進 +Z), S: wheelDir = -1 (後退 -Z)
-      // A: L wheelDir = -1, R wheelDir = +1 (左旋回 +Y)
-      // D: L wheelDir = +1, R wheelDir = -1 (右旋回 -Y)
-      const lSignedDist = lGroup.linearDistanceMoved * lGroup.wheelDir;
-      const rSignedDist = rGroup.linearDistanceMoved * rGroup.wheelDir;
+      const lSignedDist = lGroup.linearDistanceMoved * lGroup.wheelDir * 1.5;
+      const rSignedDist = rGroup.linearDistanceMoved * rGroup.wheelDir * 1.5;
 
       const forwardDelta = (lSignedDist + rSignedDist) * 0.5;
       const turnDelta = (rSignedDist - lSignedDist) / trackSpanWidth;
