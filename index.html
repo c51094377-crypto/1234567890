@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Three.js GLB Viewer - All Wheels Rotation</title>
+  <title>Three.js GLB Viewer - Turret & Barrel Control</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -222,7 +222,7 @@
       </div>
 
       <div style="font-size: 11px; color: #a1a1aa; margin-top: 2px;">
-        WASDで慣性つき移動
+        WASDで慣性つき移動 / Q,Eで砲塔旋回 / R,Fで砲身昇降
       </div>
       <div class="wasd-grid">
         <div></div>
@@ -356,6 +356,11 @@
     let lAssociatedWheels = [];
     let rAssociatedWheels = [];
 
+    // 砲塔・砲身用変数
+    let turretMesh = null;
+    let barrelMesh = null;
+    let keysPressed = {};
+
     function mod(n, m) {
       return ((n % m) + m) % m;
     }
@@ -383,7 +388,10 @@
       rDriveWheel = null;
       lAssociatedWheels = [];
       rAssociatedWheels = [];
+      turretMesh = null;
+      barrelMesh = null;
       activeKey = null;
+      keysPressed = {};
       document.getElementById('anim-group').style.display = 'none';
       document.getElementById('path-group').style.display = 'none';
     }
@@ -398,6 +406,10 @@
       model.traverse((child) => {
         if (child.name === 'L駆動輪' && child.isMesh) lDriveWheel = child;
         if (child.name === 'R駆動輪' && child.isMesh) rDriveWheel = child;
+
+        // 砲塔・砲身の検出
+        if (child.name === '砲塔') turretMesh = child;
+        if (child.name === '砲身') barrelMesh = child;
 
         if (lNames.includes(child.name) && child.isMesh) lAssociatedWheels.push(child);
         if (rNames.includes(child.name) && child.isMesh) rAssociatedWheels.push(child);
@@ -589,7 +601,6 @@
       const lSpeed = lGroup.currentSpeed * lGroup.wheelDir;
       const rSpeed = rGroup.currentSpeed * rGroup.wheelDir;
 
-      // L駆動輪およびL関連転輪の回転
       if (lDriveWheel) {
         lDriveWheel.rotation.x += lSpeed * delta * 5;
       }
@@ -597,7 +608,6 @@
         wheel.rotation.x += lSpeed * delta * 5;
       }
 
-      // R駆動輪およびR関連転輪の回転
       if (rDriveWheel) {
         rDriveWheel.rotation.x += rSpeed * delta * 5;
       }
@@ -606,11 +616,41 @@
       }
     }
 
+    // 砲塔・砲身の回転・昇降処理
+    function updateTurretAndBarrel(delta) {
+      const rotSpeed = 2.0 * delta;
+
+      // 砲塔旋回 (Q: +Y, E: -Y)
+      if (turretMesh) {
+        if (keysPressed['q']) {
+          turretMesh.rotation.y += rotSpeed;
+        }
+        if (keysPressed['e']) {
+          turretMesh.rotation.y -= rotSpeed;
+        }
+      }
+
+      // 砲身昇降 (-Y ~ 10° ≒ -60° ~ +10° -> ラジアンに変換: -1.047 ~ 0.1745)
+      if (barrelMesh) {
+        if (keysPressed['r']) {
+          barrelMesh.rotation.x -= rotSpeed;
+        }
+        if (keysPressed['f']) {
+          barrelMesh.rotation.x += rotSpeed;
+        }
+        // 角度制限: Y-60~10° (-60度 = -1.04719rad, +10度 = 0.174533rad)
+        const minRad = THREE.MathUtils.degToRad(-60);
+        const maxRad = THREE.MathUtils.degToRad(10);
+        barrelMesh.rotation.x = Math.max(minRad, Math.min(maxRad, barrelMesh.rotation.x));
+      }
+    }
+
     function updateAllPathsMovement(delta) {
       updateGroupMovement(pathGroups.L, delta);
       updateGroupMovement(pathGroups.R, delta);
 
       updateDriveWheelsRotation(delta);
+      updateTurretAndBarrel(delta);
 
       if (Math.random() < 0.1) updatePathStatusText();
     }
@@ -739,6 +779,9 @@
       if (['w', 'a', 's', 'd'].includes(key)) {
         setKeyDirections(key);
       }
+      if (['q', 'e', 'r', 'f'].includes(key)) {
+        keysPressed[key] = true;
+      }
     });
 
     window.addEventListener('keyup', (e) => {
@@ -746,6 +789,9 @@
       if (key === activeKey) {
         activeKey = null;
         document.querySelectorAll('.wasd-btn').forEach((btn) => btn.classList.remove('active'));
+      }
+      if (['q', 'e', 'r', 'f'].includes(key)) {
+        keysPressed[key] = false;
       }
     });
 
