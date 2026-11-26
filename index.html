@@ -500,6 +500,10 @@
         if (child.name === 'R駆動輪' && child.isMesh) {
           rDriveWheel = { mesh: child, radius: getMeshRadius(child) };
         }
+        // R駆動輪のバリエーション名（もし存在する場合の対応）
+        if ((child.name === 'R駆動輪2' || child.name === 'R駆動輪3' || child.name === 'R駆動輪4' || child.name === 'R駆動輪5' || child.name === 'R駆動輪6') && child.isMesh) {
+          rAssociatedWheels.push({ mesh: child, radius: getMeshRadius(child) });
+        }
 
         // APCメッシュ(グループ)の検出
         if (child.name === 'APC') apcMesh = child;
@@ -597,6 +601,7 @@
       let lTargetDir = 1, rTargetDir = 1;
       let lWheelDir = 1, rWheelDir = 1;
 
+      // Wで前進（方向: 1）、Sで後退（方向: -1）に完全統一
       if (key === 'w') {
         lTargetDir = 1; rTargetDir = 1;
         lWheelDir = 1; rWheelDir = 1;
@@ -722,21 +727,23 @@
       const lGroup = pathGroups.L;
       const rGroup = pathGroups.R;
 
-      // 駆動輪・転輪・補助輪・補助転輪の回転速度を、実際の履帯移動量・速度と完全に一致させる
+      // 指定されたすべての車輪（L駆動輪、L転輪1〜6、L補助輪、L補助転輪、R駆動輪、R駆動輪2〜6、R転輪1〜6、R補助輪、R補助転輪）の回転速度を履帯の移動速度・量と完全に同期
       if (lDriveWheel) {
         const lRotDelta = (lGroup.linearDistanceMoved * lGroup.wheelDir) / lDriveWheel.radius;
         lDriveWheel.mesh.rotation.x += lRotDelta;
-        for (const wheel of lAssociatedWheels) {
-          wheel.mesh.rotation.x += (lGroup.linearDistanceMoved * lGroup.wheelDir) / wheel.radius;
-        }
+      }
+      for (const wheel of lAssociatedWheels) {
+        const wheelRotDelta = (lGroup.linearDistanceMoved * lGroup.wheelDir) / wheel.radius;
+        wheel.mesh.rotation.x += wheelRotDelta;
       }
 
       if (rDriveWheel) {
         const rRotDelta = (rGroup.linearDistanceMoved * rGroup.wheelDir) / rDriveWheel.radius;
         rDriveWheel.mesh.rotation.x += rRotDelta;
-        for (const wheel of rAssociatedWheels) {
-          wheel.mesh.rotation.x += (rGroup.linearDistanceMoved * rGroup.wheelDir) / wheel.radius;
-        }
+      }
+      for (const wheel of rAssociatedWheels) {
+        const wheelRotDelta = (rGroup.linearDistanceMoved * rGroup.wheelDir) / wheel.radius;
+        wheel.mesh.rotation.x += wheelRotDelta;
       }
     }
 
@@ -758,7 +765,6 @@
           apcMesh.translateZ(forwardDelta);
         }
       } else if (activeKey === 'a' || activeKey === 'd') {
-        // 超信地旋回時：左右の履帯が逆方向に完璧に同期してその場で滑らかに旋回
         if (Math.abs(turnDelta) > 0.000001) {
           apcMesh.rotation.y += turnDelta * 0.5;
         }
