@@ -222,7 +222,7 @@
       </div>
 
       <div style="font-size: 11px; color: #a1a1aa; margin-top: 2px;">
-        WASDで慣性つき移動 / Q,Eで砲塔旋回 / R,Fで砲身昇降
+        WASDで慣性つき移動 / Q,Eで砲塔旋回 / R,Fで砲身昇降 / 1:車長 2:射手
       </div>
       <div class="wasd-grid">
         <div></div>
@@ -301,8 +301,9 @@
     const scene = new THREE.Scene();
     scene.background = new THREE.Color('#18181b');
 
-    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 1000);
-    camera.position.set(2, 2, 4);
+    const defaultCamera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 1000);
+    defaultCamera.position.set(2, 2, 4);
+    let activeCamera = defaultCamera;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -324,7 +325,7 @@
     const gridHelper = new THREE.GridHelper(10, 20, 0x52525b, 0x27272a);
     scene.add(gridHelper);
 
-    const controls = new OrbitControls(camera, renderer.domElement);
+    const controls = new OrbitControls(defaultCamera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
 
@@ -363,6 +364,17 @@
     let barrelCurrentVel = 0;
     let keysPressed = {};
 
+    // ファイル内カメラ用変数（車長・射手）
+    let commanderCamera = null;
+    let gunnerCamera = null;
+    let commanderInitialQuat = null;
+    let gunnerInitialQuat = null;
+    let lookYaw = 0;
+    let lookPitch = 0;
+    let isPointerLooking = false;
+    let lastPointerX = 0;
+    let lastPointerY = 0;
+
     function mod(n, m) {
       return ((n % m) + m) % m;
     }
@@ -373,6 +385,45 @@
       const size = box.getSize(new THREE.Vector3());
       const radius = Math.max(size.y, size.z) * 0.5;
       return radius > 0.001 ? radius : 0.3;
+    }
+
+    function switchCameraMode(mode) {
+      if (mode === 'commander' && commanderCamera) {
+        activeCamera = commanderCamera;
+        controls.enabled = false;
+        lookYaw = 0;
+        lookPitch = 0;
+        updateFirstPersonLook();
+      } else if (mode === 'gunner' && gunnerCamera) {
+        activeCamera = gunnerCamera;
+        controls.enabled = false;
+        lookYaw = 0;
+        lookPitch = 0;
+        updateFirstPersonLook();
+      } else {
+        activeCamera = defaultCamera;
+        controls.enabled = true;
+      }
+      updateCameraAspect();
+    }
+
+    function updateFirstPersonLook() {
+      if (activeCamera === commanderCamera && commanderCamera && commanderInitialQuat) {
+        const euler = new THREE.Euler(lookPitch, lookYaw, 0, 'YXZ');
+        const offsetQuat = new THREE.Quaternion().setFromEuler(euler);
+        commanderCamera.quaternion.copy(commanderInitialQuat).multiply(offsetQuat);
+      } else if (activeCamera === gunnerCamera && gunnerCamera && gunnerInitialQuat) {
+        const euler = new THREE.Euler(lookPitch, lookYaw, 0, 'YXZ');
+        const offsetQuat = new THREE.Quaternion().setFromEuler(euler);
+        gunnerCamera.quaternion.copy(gunnerInitialQuat).multiply(offsetQuat);
+      }
+    }
+
+    function updateCameraAspect() {
+      if (activeCamera && activeCamera.isPerspectiveCamera) {
+        activeCamera.aspect = window.innerWidth / window.innerHeight;
+        activeCamera.updateProjectionMatrix();
+      }
     }
 
     function clearCurrentModel() {
@@ -402,18 +453,39 @@
       barrelMesh = null;
       turretCurrentVel = 0;
       barrelCurrentVel = 0;
+      commanderCamera = null;
+      gunnerCamera = null;
+      commanderInitialQuat = null;
+      gunnerInitialQuat = null;
+      lookYaw = 0;
+      lookPitch = 0;
+      activeCamera = defaultCamera;
+      controls.enabled = true;
       activeKey = null;
       keysPressed = {};
       document.getElementById('anim-group').style.display = 'none';
       document.getElementById('path-group').style.display = 'none';
     }
 
-    function setupPaths(model) {
+    function setupPaths(model, gltfCameras = []) {
       model.updateMatrixWorld(true);
       const foundMap = {};
 
       const lNames = ['L転輪1', 'L転輪2', 'L転輪3', 'L転輪4', 'L転輪5', 'L転輪6', 'L補助転輪', 'L補助輪'];
       const rNames = ['R転輪1', 'R転輪2', 'R転輪3', 'R転輪4', 'R転輪5', 'R転輪6', 'R補助転輪', 'R補助輪'];
+
+      const findOrCreateCameraFromNode = (node) => {
+        if (node.isCamera) return node;
+        let foundCam = null;
+        node.traverse((c) => {
+          if (!foundCam && c.isCamera) foundCam = c;
+        });
+        if (foundCam) return foundCam;
+
+        const cam = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 1000);
+        node.add(cam);
+        return cam;
+      };
 
       model.traverse((child) => {
         if (child.name === 'L駆動輪' && child.isMesh) {
@@ -426,6 +498,16 @@
         // 砲塔・砲身の検出
         if (child.name === '砲塔') turretMesh = child;
         if (child.name === '砲身') barrelMesh = child;
+
+        // 車長・射手カメラの検出
+        if (child.name === '車長') {
+          commanderCamera = findOrCreateCameraFromNode(child);
+          commanderInitialQuat = commanderCamera.quaternion.clone();
+        }
+        if (child.name === '射手') {
+          gunnerCamera = findOrCreateCameraFromNode(child);
+          gunnerInitialQuat = gunnerCamera.quaternion.clone();
+        }
 
         if (lNames.includes(child.name) && child.isMesh) {
           lAssociatedWheels.push({ mesh: child, radius: getMeshRadius(child) });
@@ -445,6 +527,20 @@
           }
         }
       });
+
+      // gltf.cameras 配列側にも念のためチェック
+      if (Array.isArray(gltfCameras)) {
+        gltfCameras.forEach((cam) => {
+          if (!commanderCamera && (cam.name === '車長' || (cam.parent && cam.parent.name === '車長'))) {
+            commanderCamera = cam;
+            commanderInitialQuat = commanderCamera.quaternion.clone();
+          }
+          if (!gunnerCamera && (cam.name === '射手' || (cam.parent && cam.parent.name === '射手'))) {
+            gunnerCamera = cam;
+            gunnerInitialQuat = gunnerCamera.quaternion.clone();
+          }
+        });
+      }
 
       ['L', 'R'].forEach((prefix) => {
         const nodes = [];
@@ -713,7 +809,7 @@
       const newBox = new THREE.Box3().setFromObject(model);
       const newCenter = newBox.getCenter(new THREE.Vector3());
       const maxDim = Math.max(size.x, size.y, size.z) || 1;
-      const fov = camera.fov * (Math.PI / 180);
+      const fov = defaultCamera.fov * (Math.PI / 180);
       const distance = Math.abs(maxDim / (2 * Math.tan(fov / 2))) * 1.6;
 
       defaultTarget.copy(newCenter);
@@ -723,15 +819,16 @@
         newCenter.z + distance * 0.9
       );
 
-      camera.near = maxDim / 100;
-      camera.far = maxDim * 100;
-      camera.updateProjectionMatrix();
+      defaultCamera.near = maxDim / 100;
+      defaultCamera.far = maxDim * 100;
+      defaultCamera.updateProjectionMatrix();
 
       resetCamera();
     }
 
     function resetCamera() {
-      camera.position.copy(defaultCameraPos);
+      switchCameraMode('default');
+      defaultCamera.position.copy(defaultCameraPos);
       controls.target.copy(defaultTarget);
       controls.update();
     }
@@ -749,7 +846,7 @@
           currentModel = gltf.scene;
           scene.add(currentModel);
           fitModelToView(currentModel);
-          setupPaths(currentModel);
+          setupPaths(currentModel, gltf.cameras);
           applyWireframe(document.getElementById('wireframe-toggle').checked);
 
           if (gltf.animations && gltf.animations.length > 0) {
@@ -796,6 +893,44 @@
       });
     }
 
+    // 車長・射手視点での首振り操作（マウス＆タッチ指操作対応）
+    const domElem = renderer.domElement;
+    domElem.addEventListener('pointerdown', (e) => {
+      if (activeCamera === commanderCamera || activeCamera === gunnerCamera) {
+        isPointerLooking = true;
+        lastPointerX = e.clientX;
+        lastPointerY = e.clientY;
+      }
+    });
+
+    window.addEventListener('pointermove', (e) => {
+      if (!isPointerLooking) return;
+      if (activeCamera !== commanderCamera && activeCamera !== gunnerCamera) {
+        isPointerLooking = false;
+        return;
+      }
+      const dx = e.clientX - lastPointerX;
+      const dy = e.clientY - lastPointerY;
+      lastPointerX = e.clientX;
+      lastPointerY = e.clientY;
+
+      const sensitivity = 0.004;
+      lookYaw -= dx * sensitivity;
+      lookPitch -= dy * sensitivity;
+      const maxPitch = THREE.MathUtils.degToRad(85);
+      lookPitch = Math.max(-maxPitch, Math.min(maxPitch, lookPitch));
+
+      updateFirstPersonLook();
+    });
+
+    window.addEventListener('pointerup', () => {
+      isPointerLooking = false;
+    });
+
+    window.addEventListener('pointercancel', () => {
+      isPointerLooking = false;
+    });
+
     document.getElementById('file-input').addEventListener('change', (e) => {
       loadGLBFile(e.target.files[0]);
     });
@@ -822,6 +957,14 @@
     window.addEventListener('keydown', (e) => {
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
       const key = e.key.toLowerCase();
+      if (key === '1') {
+        switchCameraMode('commander');
+        return;
+      }
+      if (key === '2') {
+        switchCameraMode('gunner');
+        return;
+      }
       if (['w', 'a', 's', 'd'].includes(key)) {
         setKeyDirections(key);
       }
@@ -904,8 +1047,7 @@
     });
 
     window.addEventListener('resize', () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
+      updateCameraAspect();
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
@@ -914,8 +1056,8 @@
       const delta = clock.getDelta();
       if (mixer && isPlaying) mixer.update(delta);
       updateAllPathsMovement(delta);
-      controls.update();
-      renderer.render(scene, camera);
+      if (controls.enabled) controls.update();
+      renderer.render(scene, activeCamera);
     }
     animate();
   </script>
