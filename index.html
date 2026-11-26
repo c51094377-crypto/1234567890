@@ -228,7 +228,7 @@
         <div></div>
         <button class="wasd-btn" id="btn-w" data-key="w">
           <strong>W</strong>
-          <span>L/R: 1→79</span>
+          <span>L/R: 1→39</span>
         </button>
         <div></div>
         <button class="wasd-btn" id="btn-a" data-key="a">
@@ -529,7 +529,7 @@
         if (match) {
           const prefix = match[1];
           const num = parseInt(match[2], 10);
-          if (num >= 1 && num <= 79) {
+          if (num >= 1 && num <= 39) {
             if (!foundMap[child.name] || child.isMesh) {
               foundMap[child.name] = child;
             }
@@ -553,7 +553,7 @@
 
       ['L', 'R'].forEach((prefix) => {
         const nodes = [];
-        for (let i = 1; i <= 79; i++) {
+        for (let i = 1; i <= 39; i++) {
           const mesh = foundMap[`${prefix}${i}`];
           if (mesh) {
             const baseWorldPos = new THREE.Vector3();
@@ -643,12 +643,12 @@
       if (lGroup.nodes.length >= 2) {
         const len = lGroup.nodes.length;
         const nextL = lGroup.nodes[mod(lGroup.stepOffset + lGroup.direction, len)].name;
-        parts.push(`L(${lGroup.direction === 1 ? '1→2' : '1→79'}): L1→${nextL}`);
+        parts.push(`L(${lGroup.direction === 1 ? '1→2' : '1→39'}): L1→${nextL}`);
       }
       if (rGroup.nodes.length >= 2) {
         const len = rGroup.nodes.length;
         const nextR = rGroup.nodes[mod(rGroup.stepOffset + rGroup.direction, len)].name;
-        parts.push(`R(${rGroup.direction === 1 ? '1→2' : '1→79'}): R1→${nextR}`);
+        parts.push(`R(${rGroup.direction === 1 ? '1→2' : '1→39'}): R1→${nextR}`);
       }
       document.getElementById('path-status').textContent = parts.join(' / ');
     }
