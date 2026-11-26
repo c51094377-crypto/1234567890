@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Three.js GLB Viewer - Drive Wheels Rotation</title>
+  <title>Three.js GLB Viewer - All Wheels Rotation</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -353,6 +353,8 @@
 
     let lDriveWheel = null;
     let rDriveWheel = null;
+    let lAssociatedWheels = [];
+    let rAssociatedWheels = [];
 
     function mod(n, m) {
       return ((n % m) + m) % m;
@@ -379,6 +381,8 @@
       pathGroups.R = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1 };
       lDriveWheel = null;
       rDriveWheel = null;
+      lAssociatedWheels = [];
+      rAssociatedWheels = [];
       activeKey = null;
       document.getElementById('anim-group').style.display = 'none';
       document.getElementById('path-group').style.display = 'none';
@@ -388,9 +392,15 @@
       model.updateMatrixWorld(true);
       const foundMap = {};
 
+      const lNames = ['L転輪1', 'L転輪2', 'L転輪3', 'L転輪4', 'L転輪5', 'L転輪6', 'L補助転輪', 'L補助輪'];
+      const rNames = ['R転輪1', 'R転輪2', 'R転輪3', 'R転輪4', 'R転輪5', 'R転輪6', 'R補助転輪', 'R補助輪'];
+
       model.traverse((child) => {
         if (child.name === 'L駆動輪' && child.isMesh) lDriveWheel = child;
         if (child.name === 'R駆動輪' && child.isMesh) rDriveWheel = child;
+
+        if (lNames.includes(child.name) && child.isMesh) lAssociatedWheels.push(child);
+        if (rNames.includes(child.name) && child.isMesh) rAssociatedWheels.push(child);
 
         const match = child.name.match(/^([LR])([1-9][0-9]?)$/);
         if (match) {
@@ -453,16 +463,16 @@
 
       if (key === 'w') {
         lTargetDir = -1; rTargetDir = -1;
-        lWheelDir = 1; rWheelDir = 1;   // 符号反転
+        lWheelDir = 1; rWheelDir = 1;
       } else if (key === 's') {
         lTargetDir = 1; rTargetDir = 1;
-        lWheelDir = -1; rWheelDir = -1; // 符号反転
+        lWheelDir = -1; rWheelDir = -1;
       } else if (key === 'a') {
         lTargetDir = 1; rTargetDir = -1;
-        lWheelDir = -1; rWheelDir = 1;  // 符号反転
+        lWheelDir = -1; rWheelDir = 1;
       } else if (key === 'd') {
         lTargetDir = -1; rTargetDir = 1;
-        lWheelDir = 1; rWheelDir = -1;  // 符号反転
+        lWheelDir = 1; rWheelDir = -1;
       }
 
       pathGroups.L.targetDirection = lTargetDir;
@@ -576,14 +586,23 @@
       const lGroup = pathGroups.L;
       const rGroup = pathGroups.R;
 
+      const lSpeed = lGroup.currentSpeed * lGroup.wheelDir;
+      const rSpeed = rGroup.currentSpeed * rGroup.wheelDir;
+
+      // L駆動輪およびL関連転輪の回転
       if (lDriveWheel) {
-        const lSpeed = lGroup.currentSpeed * lGroup.wheelDir;
         lDriveWheel.rotation.x += lSpeed * delta * 5;
       }
+      for (const wheel of lAssociatedWheels) {
+        wheel.rotation.x += lSpeed * delta * 5;
+      }
 
+      // R駆動輪およびR関連転輪の回転
       if (rDriveWheel) {
-        const rSpeed = rGroup.currentSpeed * rGroup.wheelDir;
         rDriveWheel.rotation.x += rSpeed * delta * 5;
+      }
+      for (const wheel of rAssociatedWheels) {
+        wheel.rotation.x += rSpeed * delta * 5;
       }
     }
 
