@@ -530,9 +530,7 @@
           const prefix = match[1];
           const num = parseInt(match[2], 10);
           if (num >= 1 && num <= 39) {
-            if (!foundMap[child.name] || child.isMesh) {
-              foundMap[child.name] = child;
-            }
+            foundMap[child.name] = child;
           }
         }
       });
