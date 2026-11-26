@@ -364,9 +364,9 @@
     let barrelCurrentVel = 0;
     let keysPressed = {};
 
-    // 車体メッシュ（APC M3A3）用変数
-    let apcHullMesh = null;
-    let trackHalfWidth = 1.0;
+    // APC移動・旋回用変数
+    let apcMesh = null;
+    let trackSpanWidth = 1.0;
 
     // ファイル内カメラ用変数（車長・射手）
     let commanderCamera = null;
@@ -457,8 +457,8 @@
       barrelMesh = null;
       turretCurrentVel = 0;
       barrelCurrentVel = 0;
-      apcHullMesh = null;
-      trackHalfWidth = 1.0;
+      apcMesh = null;
+      trackSpanWidth = 1.0;
       commanderCamera = null;
       gunnerCamera = null;
       commanderInitialQuat = null;
@@ -501,8 +501,8 @@
           rDriveWheel = { mesh: child, radius: getMeshRadius(child) };
         }
 
-        // APC M3A3 車体グループの検出
-        if (child.name === 'APC M3A3') apcHullMesh = child;
+        // APCメッシュ(グループ)の検出
+        if (child.name === 'APC') apcMesh = child;
 
         // 砲塔・砲身の検出
         if (child.name === '砲塔') turretMesh = child;
@@ -582,12 +582,10 @@
         };
       });
 
-      // 左右履帯間の距離から旋回半径を計算
+      // 左右の履帯幅を算出（旋回角速度計算用）
       if (pathGroups.L.nodes.length > 0 && pathGroups.R.nodes.length > 0) {
         const dist = pathGroups.L.nodes[0].baseWorldPos.distanceTo(pathGroups.R.nodes[0].baseWorldPos);
-        if (dist > 0.01) {
-          trackHalfWidth = dist * 0.5;
-        }
+        if (dist > 0.01) trackSpanWidth = dist;
       }
 
       const lCount = pathGroups.L.nodes.length;
@@ -759,31 +757,31 @@
       }
     }
 
-    // 履帯の移動速度に合わせて APC M3A3 メッシュ(グループ)を移動・旋回させる
-    function updateHullMovement() {
-      if (!apcHullMesh) return;
+    // 履帯の移動速度に合わせてAPCの移動(+Z / -Z)および旋回(+Y / -Y)を処理
+    function updateApcMovement() {
+      if (!apcMesh) return;
 
       const lGroup = pathGroups.L;
       const rGroup = pathGroups.R;
 
-      // Wで+Z、Sで-Z方向となるよう各履帯の前後進距離を算出 (wheelDir: W=+1, S=-1, A:L=-1/R=+1, D:L=+1/R=-1)
-      const dL = lGroup.linearDistanceMoved * lGroup.wheelDir;
-      const dR = rGroup.linearDistanceMoved * rGroup.wheelDir;
+      // W: wheelDir = +1 (前進 +Z), S: wheelDir = -1 (後退 -Z)
+      // A: L wheelDir = -1, R wheelDir = +1 (左旋回 +Y)
+      // D: L wheelDir = +1, R wheelDir = -1 (右旋回 -Y)
+      const lSignedDist = lGroup.linearDistanceMoved * lGroup.wheelDir;
+      const rSignedDist = rGroup.linearDistanceMoved * rGroup.wheelDir;
 
-      if (Math.abs(dL) < 1e-7 && Math.abs(dR) < 1e-7) return;
+      const forwardDelta = (lSignedDist + rSignedDist) * 0.5;
+      const turnDelta = (rSignedDist - lSignedDist) / trackSpanWidth;
 
-      // 差動駆動モデル: 並進移動量とY軸旋回角度
-      const forwardMove = (dL + dR) * 0.5;
-      const yawChange = (dR - dL) / (2 * trackHalfWidth);
-
-      // Aで+Y方向、Dで-Y方向に旋回
-      apcHullMesh.rotation.y += yawChange;
-
-      // Wで+Z方向、Sで-Z方向（ローカルZ軸基準で移動）
-      apcHullMesh.translateZ(forwardMove);
+      if (Math.abs(turnDelta) > 0.000001) {
+        apcMesh.rotation.y += turnDelta;
+      }
+      if (Math.abs(forwardDelta) > 0.000001) {
+        apcMesh.translateZ(forwardDelta);
+      }
     }
 
-    // 砲塔・砲身の回転・昇降処理（速度を半分に変更）
+    // 砲塔・砲身の回転・昇降処理（回転速度を半分 0.9 に調整）
     function updateTurretAndBarrel(delta) {
       const maxRotSpeed = 0.9;
       const damping = Math.min(1.0, inertiaFactor * delta);
@@ -832,8 +830,8 @@
       updateGroupMovement(pathGroups.L, delta);
       updateGroupMovement(pathGroups.R, delta);
 
-      updateHullMovement();
       updateDriveWheelsRotation();
+      updateApcMovement();
       updateTurretAndBarrel(delta);
 
       if (Math.random() < 0.1) updatePathStatusText();
