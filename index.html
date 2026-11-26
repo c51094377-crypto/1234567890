@@ -344,8 +344,8 @@
     const clock = new THREE.Clock();
 
     let pathGroups = {
-      L: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 },
-      R: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 }
+      L: { nodes: [], progress: 0, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 },
+      R: { nodes: [], progress: 0, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 }
     };
     let activeKey = null;
     let isSyncRotation = true;
@@ -378,10 +378,6 @@
     let isPointerLooking = false;
     let lastPointerX = 0;
     let lastPointerY = 0;
-
-    function mod(n, m) {
-      return ((n % m) + m) % m;
-    }
 
     function getMeshRadius(mesh) {
       if (!mesh) return 0.3;
@@ -447,8 +443,8 @@
       mixer = null;
       animations = [];
       activeAction = null;
-      pathGroups.L = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 };
-      pathGroups.R = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 };
+      pathGroups.L = { nodes: [], progress: 0, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 };
+      pathGroups.R = { nodes: [], progress: 0, currentSpeed: 0, targetDirection: 1, wheelDir: 1, linearDistanceMoved: 0 };
       lDriveWheel = null;
       rDriveWheel = null;
       lAssociatedWheels = [];
@@ -473,6 +469,7 @@
       document.getElementById('path-group').style.display = 'none';
     }
 
+    // 閉じた連続スプラインパス（CatmullRomCurve3）を構築して、全ピースを均等に沿わせる方式
     function setupPaths(model, gltfCameras = []) {
       model.updateMatrixWorld(true);
       const foundMap = {};
@@ -501,14 +498,10 @@
           rDriveWheel = { mesh: child, radius: getMeshRadius(child) };
         }
 
-        // APCメッシュ(グループ)の検出
         if (child.name === 'APC') apcMesh = child;
-
-        // 砲塔・砲身の検出
         if (child.name === '砲塔') turretMesh = child;
         if (child.name === '砲身') barrelMesh = child;
 
-        // 車長・射手カメラの検出
         if (child.name === '車長') {
           commanderCamera = findOrCreateCameraFromNode(child);
           commanderInitialQuat = commanderCamera.quaternion.clone();
@@ -535,7 +528,6 @@
         }
       });
 
-      // gltf.cameras 配列側にも念のためチェック
       if (Array.isArray(gltfCameras)) {
         gltfCameras.forEach((cam) => {
           if (!commanderCamera && (cam.name === '車長' || (cam.parent && cam.parent.name === '車長'))) {
@@ -550,23 +542,25 @@
       }
 
       ['L', 'R'].forEach((prefix) => {
-        const nodes = [];
+        const rawPoints = [];
+        const meshes = [];
         for (let i = 1; i <= 39; i++) {
           const mesh = foundMap[`${prefix}${i}`];
           if (mesh) {
-            nodes.push({
-              name: `${prefix}${i}`,
-              mesh,
-              initialLocalPos: mesh.position.clone(),
-              initialLocalQuat: mesh.quaternion.clone()
-            });
+            meshes.push(mesh);
+            rawPoints.push(mesh.position.clone());
           }
         }
+
+        let curve = null;
+        if (rawPoints.length >= 2) {
+          curve = new THREE.CatmullRomCurve3(rawPoints, true, 'centripetal', 0.1);
+        }
+
         pathGroups[prefix] = {
-          nodes,
-          stepOffset: 0,
-          segmentProgress: 0,
-          direction: 1,
+          meshes,
+          curve,
+          progress: 0,
           currentSpeed: 0,
           targetDirection: 1,
           wheelDir: 1,
@@ -574,14 +568,13 @@
         };
       });
 
-      // 左右の履帯幅を算出（ APC空間でのローカル初期位置ベース）
-      if (pathGroups.L.nodes.length > 0 && pathGroups.R.nodes.length > 0) {
-        const dist = pathGroups.L.nodes[0].mesh.position.distanceTo(pathGroups.R.nodes[0].mesh.position);
+      if (pathGroups.L.meshes.length > 0 && pathGroups.R.meshes.length > 0) {
+        const dist = pathGroups.L.meshes[0].position.distanceTo(pathGroups.R.meshes[0].position);
         if (dist > 0.01) trackSpanWidth = dist;
       }
 
-      const lCount = pathGroups.L.nodes.length;
-      const rCount = pathGroups.R.nodes.length;
+      const lCount = pathGroups.L.meshes.length;
+      const rCount = pathGroups.R.meshes.length;
       const pathGroupEl = document.getElementById('path-group');
 
       if (lCount >= 2 || rCount >= 2) {
@@ -598,10 +591,10 @@
       let lWheelDir = 1, rWheelDir = 1;
 
       if (key === 'w') {
-        lTargetDir = -1; rTargetDir = -1;
+        lTargetDir = 1; rTargetDir = 1;
         lWheelDir = 1; rWheelDir = 1;
       } else if (key === 's') {
-        lTargetDir = 1; rTargetDir = 1;
+        lTargetDir = -1; rTargetDir = -1;
         lWheelDir = -1; rWheelDir = -1;
       } else if (key === 'a') {
         lTargetDir = 1; rTargetDir = -1;
@@ -627,28 +620,20 @@
         document.getElementById('path-status').textContent = '停止中 (慣性待機)';
         return;
       }
-
-      const lGroup = pathGroups.L;
-      const rGroup = pathGroups.R;
-      const parts = [];
-
-      if (lGroup.nodes.length >= 2) {
-        const len = lGroup.nodes.length;
-        const nextL = lGroup.nodes[mod(lGroup.stepOffset + lGroup.direction, len)].name;
-        parts.push(`L(${lGroup.direction === 1 ? '1→2' : '1→39'}): L1→${nextL}`);
-      }
-      if (rGroup.nodes.length >= 2) {
-        const len = rGroup.nodes.length;
-        const nextR = rGroup.nodes[mod(rGroup.stepOffset + rGroup.direction, len)].name;
-        parts.push(`R(${rGroup.direction === 1 ? '1→2' : '1→39'}): R1→${nextR}`);
-      }
-      document.getElementById('path-status').textContent = parts.join(' / ');
+      document.getElementById('path-status').textContent = 'M3A3 履帯駆動・車体連動中';
     }
 
+    const _dummyPoint = new THREE.Vector3();
+    const _dummyTangent = new THREE.Vector3();
+    const _upVector = new THREE.Vector3(0, 1, 0);
+    const _rotMatrix = new THREE.Matrix4();
+    const _targetQuat = new THREE.Quaternion();
+
     function updateGroupMovement(group, delta) {
-      const count = group.nodes.length;
+      const meshes = group.meshes;
+      const count = meshes.length;
       group.linearDistanceMoved = 0;
-      if (count < 2) return;
+      if (count < 2 || !group.curve) return;
 
       const targetSpeed = activeKey ? pathSpeedMultiplier : 0;
       group.currentSpeed += (targetSpeed - group.currentSpeed) * Math.min(1.0, inertiaFactor * delta);
@@ -658,48 +643,26 @@
         return;
       }
 
-      if (activeKey && group.direction !== group.targetDirection) {
-        group.stepOffset = mod(group.stepOffset + group.direction, count);
-        group.segmentProgress = group.segmentProgress > 0 ? (1 - group.segmentProgress) : 0;
-        group.direction = group.targetDirection;
-      }
+      const moveDelta = group.currentSpeed * delta * 0.08 * group.targetDirection;
+      group.progress = (group.progress + moveDelta) % 1.0;
+      if (group.progress < 0) group.progress += 1.0;
 
-      const dir = group.direction;
-      let remainingBudget = group.currentSpeed * delta * 0.15; // 周回スケール調整
-      let totalLinearDistance = 0;
+      const curveLength = group.curve.getLength();
+      group.linearDistanceMoved = Math.abs(moveDelta) * curveLength;
 
-      let safetyGuard = 0;
-      while (remainingBudget > 0 && safetyGuard < count) {
-        safetyGuard++;
-        const slotA = group.nodes[mod(group.stepOffset, count)];
-        const slotB = group.nodes[mod(group.stepOffset + dir, count)];
-        const segmentLength = slotA.initialLocalPos.distanceTo(slotB.initialLocalPos) || 0.05;
-        const remainingInSegment = (1 - group.segmentProgress) * segmentLength;
-
-        if (remainingBudget >= remainingInSegment) {
-          totalLinearDistance += segmentLength * (1 - group.segmentProgress);
-          remainingBudget -= remainingInSegment;
-          group.segmentProgress = 0;
-          group.stepOffset = mod(group.stepOffset + dir, count);
-        } else {
-          totalLinearDistance += remainingBudget;
-          group.segmentProgress += remainingBudget / segmentLength;
-          remainingBudget = 0;
-        }
-      }
-
-      group.linearDistanceMoved = totalLinearDistance;
-
-      // 各履帯ピースをAPCローカル座標系内でループ循環移動させる
-      const t = group.segmentProgress;
+      // 39個の履帯ピースをスプライン上に等間隔に配置して途切れなく周回させる
       for (let i = 0; i < count; i++) {
-        const item = group.nodes[i];
-        const slotA = group.nodes[mod(i + group.stepOffset, count)];
-        const slotB = group.nodes[mod(i + group.stepOffset + dir, count)];
+        const u = (group.progress + (i / count)) % 1.0;
+        const mesh = meshes[i];
 
-        item.mesh.position.lerpVectors(slotA.initialLocalPos, slotB.initialLocalPos, t);
+        group.curve.getPointAt(u, _dummyPoint);
+        mesh.position.copy(_dummyPoint);
+
         if (isSyncRotation) {
-          item.mesh.quaternion.slerpQuaternions(slotA.initialLocalQuat, slotB.initialLocalQuat, t);
+          group.curve.getTangentAt(u, _dummyTangent);
+          _rotMatrix.lookAt(_dummyPoint, _dummyPoint.clone().add(_dummyTangent), _upVector);
+          _targetQuat.setFromRotationMatrix(_rotMatrix);
+          mesh.quaternion.slerp(_targetQuat, 0.2);
         }
       }
     }
@@ -708,8 +671,8 @@
       const lGroup = pathGroups.L;
       const rGroup = pathGroups.R;
 
-      const lDist = lGroup.linearDistanceMoved * lGroup.wheelDir * 10;
-      const rDist = rGroup.linearDistanceMoved * rGroup.wheelDir * 10;
+      const lDist = lGroup.linearDistanceMoved * lGroup.wheelDir * 12;
+      const rDist = rGroup.linearDistanceMoved * rGroup.wheelDir * 12;
 
       if (lDriveWheel) {
         lDriveWheel.mesh.rotation.x += lDist / lDriveWheel.radius;
@@ -945,8 +908,8 @@
       isSyncRotation = e.target.checked;
       if (!isSyncRotation) {
         ['L', 'R'].forEach((prefix) => {
-          pathGroups[prefix].nodes.forEach((item) => {
-            item.mesh.quaternion.copy(item.initialLocalQuat);
+          pathGroups[prefix].meshes.forEach((mesh) => {
+            mesh.quaternion.identity();
           });
         });
       }
@@ -1042,7 +1005,7 @@
       dropOverlay.classList.add('active');
     });
     window.addEventListener('dragleave', (e) => {
-      if (e.relatedTarget === null) dropOverlay.classList.remove('active');
+      if (e.relatedTarget === null) dropOverlay.classList.remove('Child');
     });
     window.addEventListener('drop', (e) => {
       e.preventDefault();
