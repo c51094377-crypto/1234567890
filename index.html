@@ -213,10 +213,6 @@
         <input type="checkbox" id="path-rot-toggle" checked />
       </div>
       <div class="row">
-        <span>重力シミュレーション</span>
-        <input type="checkbox" id="gravity-toggle" checked />
-      </div>
-      <div class="row">
         <span>最高速度</span>
         <input type="range" id="path-speed-slider" min="0.1" max="15" step="0.1" value="3.0" />
       </div>
@@ -237,7 +233,7 @@
         <div></div>
         <button class="wasd-btn" id="btn-a" data-key="a">
           <strong>A</strong>
-          <span>L:1→2 / R:1→79</span>
+          <span>L:+X / R:-X</span>
         </button>
         <button class="wasd-btn" id="btn-s" data-key="s">
           <strong>S</strong>
@@ -245,7 +241,7 @@
         </button>
         <button class="wasd-btn" id="btn-d" data-key="d">
           <strong>D</strong>
-          <span>L:1→79 / R:1→2</span>
+          <span>L:-X / R:+X</span>
         </button>
       </div>
 
@@ -347,19 +343,14 @@
     const clock = new THREE.Clock();
 
     let pathGroups = {
-      L: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1 },
-      R: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1 }
+      L: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1 },
+      R: { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1 }
     };
     let activeKey = null;
     let isSyncRotation = true;
     let pathSpeedMultiplier = 3.0;
     let inertiaFactor = 4.0;
-    let isGravityEnabled = true;
 
-    // 当たり判定対象のホイールメッシュリスト
-    const lWheelNames = ['L補助転輪', 'L駆動輪', 'L転輪1', 'L転輪2', 'L転輪3', 'L転輪4', 'L転輪5', 'L転輪6', 'L補助輪'];
-    const rWheelNames = ['R補助転輪', 'R駆動輪', 'R転輪1', 'R転輪2', 'R転輪3', 'R転輪4', 'R転輪5', 'R転輪6'];
-    let collisionMeshes = [];
     let lDriveWheel = null;
     let rDriveWheel = null;
 
@@ -384,9 +375,8 @@
       mixer = null;
       animations = [];
       activeAction = null;
-      pathGroups.L = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1 };
-      pathGroups.R = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1 };
-      collisionMeshes = [];
+      pathGroups.L = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1 };
+      pathGroups.R = { nodes: [], stepOffset: 0, segmentProgress: 0, direction: 1, currentSpeed: 0, targetDirection: 1, wheelDir: 1 };
       lDriveWheel = null;
       rDriveWheel = null;
       activeKey = null;
@@ -401,11 +391,6 @@
       model.traverse((child) => {
         if (child.name === 'L駆動輪' && child.isMesh) lDriveWheel = child;
         if (child.name === 'R駆動輪' && child.isMesh) rDriveWheel = child;
-
-        // 当たり判定メッシュの収集
-        if (lWheelNames.includes(child.name) || rWheelNames.includes(child.name)) {
-          if (child.isMesh) collisionMeshes.push(child);
-        }
 
         const match = child.name.match(/^([LR])([1-9][0-9]?)$/);
         if (match) {
@@ -444,7 +429,8 @@
           segmentProgress: 0,
           direction: 1,
           currentSpeed: 0,
-          targetDirection: 1
+          targetDirection: 1,
+          wheelDir: 1
         };
       });
 
@@ -462,11 +448,31 @@
 
     function setKeyDirections(key) {
       activeKey = key;
-      const lTargetDir = (key === 'w' || key === 'd') ? -1 : 1;
-      const rTargetDir = (key === 'w' || key === 'a') ? -1 : 1;
+      // W: L,Rともに 1→79 (-1), 駆動輪は両方 -X方向
+      // S: L,Rともに 1→2 (1), 駆動輪は両方 +X方向
+      // A: Lは 1→2 (1) [駆動輪+X], Rは 1→79 (-1) [駆動輪-X]
+      // D: Lは 1→79 (-1) [駆動輪-X], Rは 1→2 (1) [駆動輪+X]
+      let lTargetDir = 1, rTargetDir = 1;
+      let lWheelDir = 1, rWheelDir = 1;
+
+      if (key === 'w') {
+        lTargetDir = -1; rTargetDir = -1;
+        lWheelDir = -1; rWheelDir = -1; // -X方向
+      } else if (key === 's') {
+        lTargetDir = 1; rTargetDir = 1;
+        lWheelDir = 1; rWheelDir = 1;   // +X方向
+      } else if (key === 'a') {
+        lTargetDir = 1; rTargetDir = -1;
+        lWheelDir = 1; rWheelDir = -1;   // L:+X, R:-X
+      } else if (key === 'd') {
+        lTargetDir = -1; rTargetDir = 1;
+        lWheelDir = -1; rWheelDir = 1;   // L:-X, R:+X
+      }
 
       pathGroups.L.targetDirection = lTargetDir;
       pathGroups.R.targetDirection = rTargetDir;
+      pathGroups.L.wheelDir = lWheelDir;
+      pathGroups.R.wheelDir = rWheelDir;
 
       document.querySelectorAll('.wasd-btn').forEach((btn) => {
         btn.classList.toggle('active', btn.dataset.key === key);
@@ -570,61 +576,19 @@
       }
     }
 
-    // 重力と車輪の当たり判定処理（モデル全体をY軸方向に沈み込ませる）
-    const raycaster = new THREE.Raycaster();
-    const downVector = new THREE.Vector3(0, -1, 0);
-
-    function applyGravityAndCollision() {
-      if (!isGravityEnabled || !currentModel || collisionMeshes.length === 0) return;
-
-      currentModel.updateMatrixWorld(true);
-
-      let highestGroundY = -Infinity;
-      let lowestWheelLocalY = Infinity;
-
-      for (const wheelMesh of collisionMeshes) {
-        const wheelWorldPos = new THREE.Vector3();
-        wheelMesh.getWorldPosition(wheelWorldPos);
-
-        raycaster.set(wheelWorldPos, downVector);
-        const intersects = raycaster.intersectObjects(scene.children, true);
-
-        for (const hit of intersects) {
-          let isSelf = false;
-          currentModel.traverse((child) => { if (child === hit.object) isSelf = true; });
-          if (!isSelf) {
-            if (hit.point.y > highestGroundY) {
-              highestGroundY = hit.point.y;
-            }
-          }
-        }
-
-        const localPos = wheelMesh.position.clone();
-        wheelMesh.localToWorld(localPos);
-        if (localPos.y < lowestWheelLocalY) {
-          lowestWheelLocalY = localPos.y;
-        }
-      }
-
-      if (highestGroundY !== -Infinity && lowestWheelLocalY !== Infinity) {
-        const targetModelY = currentModel.position.y + (highestGroundY - lowestWheelLocalY);
-        currentModel.position.y = THREE.MathUtils.lerp(currentModel.position.y, targetModelY, 0.2);
-      }
-    }
-
     function updateDriveWheelsRotation(delta) {
       const lGroup = pathGroups.L;
       const rGroup = pathGroups.R;
 
-      // L駆動輪の回転
+      // L駆動輪の回転（+X方向 または -X方向）
       if (lDriveWheel) {
-        const lSpeed = lGroup.currentSpeed * (lGroup.direction === 1 ? 1 : -1);
+        const lSpeed = lGroup.currentSpeed * lGroup.wheelDir;
         lDriveWheel.rotation.x += lSpeed * delta * 5;
       }
 
-      // R駆動輪の回転
+      // R駆動輪の回転（+X方向 または -X方向）
       if (rDriveWheel) {
-        const rSpeed = rGroup.currentSpeed * (rGroup.direction === 1 ? 1 : -1);
+        const rSpeed = rGroup.currentSpeed * rGroup.wheelDir;
         rDriveWheel.rotation.x += rSpeed * delta * 5;
       }
     }
@@ -633,10 +597,7 @@
       updateGroupMovement(pathGroups.L, delta);
       updateGroupMovement(pathGroups.R, delta);
 
-      // 駆動輪の＋X / －X方向回転を更新
       updateDriveWheelsRotation(delta);
-
-      applyGravityAndCollision();
 
       if (Math.random() < 0.1) updatePathStatusText();
     }
@@ -749,10 +710,6 @@
           });
         });
       }
-    });
-
-    document.getElementById('gravity-toggle').addEventListener('change', (e) => {
-      isGravityEnabled = e.target.checked;
     });
 
     document.getElementById('path-speed-slider').addEventListener('input', (e) => {
